@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.7
+// @version      0.8
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -32,11 +32,17 @@
     // 时间过滤配置
     const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
 
+    // 显示设置
+    const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
+    const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
+
     // 初始化关键词列表
     let keywords = GM_getValue(STORAGE_PREFIX + 'keywords', DEFAULT_KEYWORDS);
     let blockedUsers = GM_getValue(STORAGE_PREFIX + 'blocked_users', []);
     let keywordManager = null;
     let timeFilterDays = GM_getValue(TIME_FILTER_DAYS_KEY, 30);
+    let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
+    let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -703,6 +709,11 @@
 
     // 添加屏蔽按钮到问题标题
     function addBlockButtons() {
+        // 如果设置为不显示按钮,直接返回
+        if (!showBlockButton) {
+            return;
+        }
+
         const questionTitles = document.querySelectorAll('.ContentItem-title');
 
         questionTitles.forEach(titleElement => {
@@ -743,13 +754,19 @@
                 if (contentItem && !contentItem.classList.contains('custom-hidden')) {
                     contentItem.classList.add('custom-hidden');
 
-                    // 创建提示元素
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `🚫 已手动屏蔽问题: "${questionText}"`;
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        // 创建提示元素
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `🚫 已手动屏蔽问题: "${questionText}"`;
 
-                    // 替换原始内容
-                    contentItem.parentNode.replaceChild(message, contentItem);
+                        // 替换原始内容
+                        contentItem.parentNode.replaceChild(message, contentItem);
+                    } else {
+                        // 完全隐藏内容
+                        contentItem.style.display = 'none';
+                    }
 
                     // 记录到控制台
                     logHiddenContent(questionText, questionText, contentItem, '手动添加', '手动屏蔽');
@@ -782,10 +799,18 @@
 
                         if (!contentItem.classList.contains('custom-hidden')) {
                             contentItem.classList.add('custom-hidden');
-                            const message = document.createElement('div');
-                            message.className = 'custom-hidden-message';
-                            message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
-                            contentItem.parentNode.replaceChild(message, contentItem);
+
+                            // 根据设置决定是否显示占位块
+                            if (showPlaceholder) {
+                                const message = document.createElement('div');
+                                message.className = 'custom-hidden-message';
+                                message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
+                                contentItem.parentNode.replaceChild(message, contentItem);
+                            } else {
+                                // 完全隐藏内容
+                                contentItem.style.display = 'none';
+                            }
+
                             logHiddenContent(authorName, `作者: ${authorName}`, contentItem, '用户屏蔽', '手动屏蔽');
                         }
                     });
@@ -804,13 +829,19 @@
             if (!card.classList.contains('custom-hidden')) {
                 card.classList.add('custom-hidden');
 
-                // 创建提示元素
-                const message = document.createElement('div');
-                message.className = 'custom-hidden-message';
-                message.innerHTML = '🚫 已隐藏广告卡片';
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    // 创建提示元素
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = '🚫 已隐藏广告卡片';
 
-                // 替换原始内容
-                card.parentNode.replaceChild(message, card);
+                    // 替换原始内容
+                    card.parentNode.replaceChild(message, card);
+                } else {
+                    // 完全隐藏内容
+                    card.style.display = 'none';
+                }
 
                 // 记录到控制台
                 logHiddenContent('TopstoryItem--advertCard', '广告卡片', card, '广告卡片', '自动屏蔽');
@@ -837,30 +868,46 @@
                 return;
             }
 
-            // 检查用户屏蔽
+            // 用户屏蔽
             const authorName = getAuthorNameFromElement(contentItem);
             if (authorName && isUserBlocked(authorName)) {
                 contentItem.classList.add('custom-hidden');
-                const message = document.createElement('div');
-                message.className = 'custom-hidden-message';
-                message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
-                contentItem.parentNode.replaceChild(message, contentItem);
+
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
+                    contentItem.parentNode.replaceChild(message, contentItem);
+                } else {
+                    // 完全隐藏内容
+                    contentItem.style.display = 'none';
+                }
+
                 logHiddenContent(authorName, `作者: ${authorName}`, contentItem, '用户屏蔽', '自动屏蔽');
                 return;
             }
 
-            // 在问题详情页和用户主页都不执行时间过滤
+            // 时间屏蔽
             if (!isQuestionPage && !isPeoplePage && isAnswerTooOld(contentItem)) {
                 contentItem.classList.add('custom-hidden');
-                const message = document.createElement('div');
-                message.className = 'time-filter-hidden-message';
-                message.innerHTML = `⏰ 已隐藏 ${timeFilterDays} 天前的回答`;
-                contentItem.parentNode.replaceChild(message, contentItem);
+
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'time-filter-hidden-message';
+                    message.innerHTML = `⏰ 已隐藏 ${timeFilterDays} 天前的回答`;
+                    contentItem.parentNode.replaceChild(message, contentItem);
+                } else {
+                    // 完全隐藏内容
+                    contentItem.style.display = 'none';
+                }
+
                 logHiddenContent(`${timeFilterDays}天前`, '时间过滤', contentItem, '时间过滤', '自动屏蔽');
                 return;
             }
 
-            // 检查关键词屏蔽
+            // 关键词屏蔽
             const titleElement = contentItem.querySelector('.ContentItem-title a');
             if (titleElement) {
                 const questionText = titleElement.textContent.trim();
@@ -871,10 +918,17 @@
                     let displayKeyword = matchResult.keyword;
                     let matchType = matchResult.type === 'regex' ? '正则表达式' : '普通关键词';
 
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `🚫 已隐藏包含"${displayKeyword}"的问题`;
-                    contentItem.parentNode.replaceChild(message, contentItem);
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `🚫 已隐藏包含"${displayKeyword}"的问题`;
+                        contentItem.parentNode.replaceChild(message, contentItem);
+                    } else {
+                        // 完全隐藏内容
+                        contentItem.style.display = 'none';
+                    }
+
                     logHiddenContent(matchResult.keyword, questionText, contentItem, matchType, '自动屏蔽');
                 }
             }
@@ -1128,10 +1182,104 @@
             `📄 当前页面: ${pageType}\n` +
             `📱 同时隐藏广告卡片 (TopstoryItem--advertCard)\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
+            `🔘 屏蔽按钮: ${showBlockButton ? '显示' : '隐藏'}\n` +
+            `📦 占位块: ${showPlaceholder ? '显示' : '隐藏'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
             `⏰ 启动时间: ${new Date().toLocaleString()}`,
             'background: #0084ff; color: white; padding: 5px; border-radius: 3px;'
         );
+    }
+
+    // 显示显示设置界面
+    function showDisplaySettings() {
+        // 创建遮罩层
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        // 创建设置模态框
+        const settingsModal = document.createElement('div');
+        settingsModal.className = 'keyword-manager-modal';
+        settingsModal.innerHTML = `
+        <div class="keyword-manager">
+            <h3>显示设置</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="show-block-button" ${showBlockButton ? 'checked' : ''} style="margin-right: 8px;">
+                    显示问题旁边的屏蔽按钮
+                </label>
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="show-placeholder" ${showPlaceholder ? 'checked' : ''} style="margin-right: 8px;">
+                    显示已屏蔽内容的占位块
+                </label>
+            </div>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div><strong>设置说明:</strong></div>
+                <div>• 屏蔽按钮: 在问题标题旁显示"屏蔽"按钮,方便快速屏蔽问题</div>
+                <div>• 占位块: 被屏蔽的内容会显示灰色提示框,取消则完全隐藏</div>
+            </div>
+        </div>
+    `;
+
+        // 保存按钮事件
+        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
+            const newShowBlockButton = settingsModal.querySelector('#show-block-button').checked;
+            const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
+
+            showBlockButton = newShowBlockButton;
+            showPlaceholder = newShowPlaceholder;
+
+            GM_setValue(STORAGE_PREFIX + 'show_block_button', showBlockButton);
+            GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
+
+            // 关闭设置窗口
+            overlay.remove();
+            settingsModal.remove();
+
+            showNotification('显示设置已保存');
+
+            // 重新执行屏蔽以应用新设置
+            location.reload(); // 刷新页面以应用新设置
+        });
+
+        // 关闭按钮事件
+        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            settingsModal.remove();
+        });
+
+        // 点击遮罩层关闭
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                settingsModal.remove();
+            }
+        });
+
+        // 添加到页面
+        document.body.appendChild(overlay);
+        document.body.appendChild(settingsModal);
+    }
+
+    // 强制更新页面布局函数
+    function forceLayoutUpdate() {
+        // 方法1: 触发resize事件
+        window.dispatchEvent(new Event('resize'));
+
+        // 方法2: 使用requestAnimationFrame确保渲染完成
+        requestAnimationFrame(() => {
+            document.body.offsetHeight;
+        });
+
+        // 方法3: 微调一个隐藏元素来触发重排
+        const trigger = document.createElement('div');
+        trigger.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
+        document.body.appendChild(trigger);
+        trigger.offsetHeight;
+        document.body.removeChild(trigger);
     }
 
     // 注册油猴菜单命令
@@ -1139,6 +1287,7 @@
     GM_registerMenuCommand('管理屏蔽用户', showUserBlockManager);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
+    GM_registerMenuCommand('显示设置', showDisplaySettings);
 
     // 初始化
     function init() {
