@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.8
+// @version      0.9
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -59,6 +59,41 @@
 
     // 深浅色模式样式
     const styles = `
+        .keyword-manager .tabs {
+            display: flex;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border-color, #ddd);
+        }
+        .keyword-manager .tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text-color, #333);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .keyword-manager .tab.active {
+            border-bottom-color: #1890ff;
+            color: #1890ff;
+        }
+        .keyword-manager .tab:hover {
+            color: #1890ff;
+            background: rgba(24, 144, 255, 0.05);
+        }
+        
+        /* 其他现有样式保持不变 */
+        .time-filter-hidden-message {
+            margin: 10px 0;
+            padding: 15px;
+            text-align: center;
+            border: 1px solid;
+            border-radius: 6px;
+            font-size: 14px;
+            background: var(--time-filter-bg, #fff3cd);
+            color: var(--time-filter-color, #856404);
+            border-color: var(--time-filter-border, #ffeaa7);
+        }
         .time-filter-hidden-message {
             margin: 10px 0;
             padding: 15px;
@@ -520,6 +555,28 @@
         });
     }
 
+    function saveAllSettingsAndSync(newKeywords, newUsers, reason = '手动修改') {
+        // 更新全局变量
+        keywords = Array.isArray(newKeywords) ? newKeywords : [];
+        blockedUsers = Array.isArray(newUsers) ? newUsers : [];
+
+        // 本地保存
+        GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+        GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
+
+        console.log(`📦 已保存到本地 (${reason})：`, {
+            keywordsCount: keywords.length,
+            usersCount: blockedUsers.length
+        });
+
+        // WebDAV同步
+        if (webdavConfig && webdavConfig.enabled) {
+            syncToWebDAV(reason);
+        }
+
+        return true;
+    }
+
     // 保存关键词函数
     function saveKeywordsAndSync(newKeywords, reason = '手动修改') {
         keywords = Array.isArray(newKeywords) ? newKeywords : [];
@@ -563,34 +620,98 @@
         const manager = document.createElement('div');
         manager.className = 'keyword-manager-modal';
         manager.innerHTML = `
-            <div class="keyword-manager">
-                <h3>知乎问题屏蔽关键词管理</h3>
-                <textarea placeholder="每行一个关键词&#10;&#10;普通关键词示例：&#10;推广&#10;营销&#10;广告&#10;&#10;正则表达式示例：&#10;/推广.*活动/&#10;/\\d+元优惠/&#10;">${keywords.join('\n')}</textarea>
-                <div class="button-group">
-                    <button class="close-btn">取消</button>
-                    <button class="save-btn">保存</button>
-                </div>
-                <div class="help-text">
-                    <div><strong>使用说明：</strong></div>
+        <div class="keyword-manager">
+            <h3>屏蔽管理</h3>
+            <div class="tabs">
+                <button class="tab active" data-tab="keywords">关键词屏蔽</button>
+                <button class="tab" data-tab="users">用户屏蔽</button>
+            </div>
+            <textarea id="keywords-textarea" placeholder="每行一个关键词&#10;&#10;普通关键词示例：&#10;推广&#10;营销&#10;广告&#10;&#10;正则表达式示例：&#10;/推广.*活动/&#10;/\\d+元优惠/&#10;">${keywords.join('\n')}</textarea>
+            <textarea id="users-textarea" placeholder="每行一个用户名&#10;&#10;示例：&#10;用户名1&#10;用户名2&#10;用户名3" style="display: none;">${blockedUsers.join('\n')}</textarea>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div id="keywords-help">
+                    <div><strong>关键词屏蔽说明：</strong></div>
                     <div>• 普通关键词：直接匹配问题标题内容</div>
                     <div>• 正则表达式：用 // 包裹，如 /推广\d+元/</div>
                     <div>• 每行输入一个关键词</div>
                     <div>• 匹配到关键词的问题将被隐藏</div>
                     <div>• 点击问题旁的"屏蔽"按钮可快速添加关键词</div>
-                    <div>• 按 Q 键将选中文本添加到屏蔽词</div>
+                    <div>• 按 F8 键将选中文本添加到屏蔽词</div>
                     <div>• 同时自动隐藏广告卡片 (TopstoryItem--advertCard)</div>
                 </div>
+                <div id="users-help" style="display: none;">
+                    <div><strong>用户屏蔽说明：</strong></div>
+                    <div>• 每行输入一个用户名</div>
+                    <div>• 该用户的所有回答和文章将被隐藏</div>
+                    <div>• 点击回答旁的"屏蔽作者"按钮可快速添加</div>
+                    <div>• 用户名从 data-zop 属性中自动提取</div>
+                </div>
             </div>
-        `;
+        </div>
+    `;
+
+        // 标签切换功能
+        const tabs = manager.querySelectorAll('.tab');
+        const textareas = {
+            keywords: manager.querySelector('#keywords-textarea'),
+            users: manager.querySelector('#users-textarea')
+        };
+        const helps = {
+            keywords: manager.querySelector('#keywords-help'),
+            users: manager.querySelector('#users-help')
+        };
+
+        tabs.forEach(tab => {
+            tab.addEventListener('click', function () {
+                // 移除所有active类
+                tabs.forEach(t => t.classList.remove('active'));
+                // 隐藏所有文本域和帮助
+                Object.values(textareas).forEach(ta => ta.style.display = 'none');
+                Object.values(helps).forEach(help => help.style.display = 'none');
+
+                // 激活当前标签
+                this.classList.add('active');
+                const tabType = this.dataset.tab;
+                textareas[tabType].style.display = 'block';
+                helps[tabType].style.display = 'block';
+            });
+        });
 
         // 保存按钮事件
         manager.querySelector('.save-btn').addEventListener('click', function () {
-            const textarea = manager.querySelector('textarea');
-            const newKeywords = textarea.value.split('\n')
+            const keywordsText = textareas.keywords.value;
+            const usersText = textareas.users.value;
+
+            // 更新全局变量
+            const newKeywords = keywordsText.split('\n')
                 .map(line => line.trim())
                 .filter(line => line.length > 0);
 
-            saveKeywordsAndSync(newKeywords, '通过管理器修改');
+            const newUsers = usersText.split('\n')
+                .map(line => line.trim())
+                .filter(line => line.length > 0);
+
+            // 保存关键词
+            keywords = newKeywords;
+            GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+
+            // 保存屏蔽用户
+            blockedUsers = newUsers;
+            GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
+
+            console.log(`📦 已保存到本地：`, {
+                keywordsCount: keywords.length,
+                usersCount: blockedUsers.length
+            });
+
+            // WebDAV同步
+            if (webdavConfig && webdavConfig.enabled) {
+                syncToWebDAV('通过管理器修改');
+            }
 
             // 关闭管理器
             overlay.remove();
@@ -600,6 +721,9 @@
             // 重新执行屏蔽
             hideQuestions();
             hideAdvertCards();
+
+            // 显示成功提示
+            showNotification(`已保存 ${keywords.length} 个关键词和 ${blockedUsers.length} 个屏蔽用户`);
         });
 
         // 关闭按钮事件
@@ -623,8 +747,8 @@
         document.body.appendChild(manager);
         keywordManager = manager;
 
-        // 聚焦到文本框
-        manager.querySelector('textarea').focus();
+        // 聚焦到关键词文本框
+        textareas.keywords.focus();
     }
 
     // 显示用户屏蔽管理器
@@ -792,7 +916,7 @@
 
                         if (!blockedUsers.includes(authorName)) {
                             const newUsers = [...blockedUsers, authorName];
-                            saveBlockedUsersAndSync(newUsers, `手动屏蔽用户: ${authorName}`);
+                            saveAllSettingsAndSync(keywords, newUsers, `手动屏蔽用户: ${authorName}`);
                             console.log(`✅ 已添加屏蔽用户: "${authorName}"`);
                             showNotification(`已屏蔽作者: "${authorName}"`);
                         }
@@ -991,7 +1115,7 @@
                 if (!keywords.includes(selectedText)) {
                     // 添加到关键词列表
                     const newKeywords = [...keywords, selectedText];
-                    saveKeywordsAndSync(newKeywords, `快捷键添加: ${selectedText}`);
+                    saveAllSettingsAndSync(newKeywords, blockedUsers, `快捷键添加: ${selectedText}`);
 
                     // 显示成功提示
                     showNotification(`✅ 已添加屏蔽词: "${selectedText}"`);
@@ -1283,8 +1407,8 @@
     }
 
     // 注册油猴菜单命令
-    GM_registerMenuCommand('管理屏蔽关键词', showKeywordManager);
-    GM_registerMenuCommand('管理屏蔽用户', showUserBlockManager);
+    GM_registerMenuCommand('管理屏蔽设置', showKeywordManager);
+    // GM_registerMenuCommand('管理屏蔽用户', showUserBlockManager);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
     GM_registerMenuCommand('显示设置', showDisplaySettings);
@@ -1347,8 +1471,9 @@
             `   getHiddenStats() - 查看隐藏统计\n` +
             `   resetHiddenStats() - 重置统计计数\n` +
             `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
-            `💡 功能: 在知乎首页自动隐藏匹配内容\n` +
-            `💡 功能: 在问题详情页和用户主页禁用时间过滤\n` +
+            `💡 功能: 点击问题旁的"屏蔽"按钮快速屏蔽问题\n` +
+            `💡 功能: 点击"屏蔽作者"按钮快速屏蔽用户\n` +
+            `💡 菜单: 使用"管理屏蔽设置"统一管理关键词和用户屏蔽\n` +  // 更新这一行
             `💡 当前页面: ${isQuestionPage ? '问题详情页' : (isPeoplePage ? '用户主页' : '首页或其他页面')}\n` +
             `💡 时间过滤: ${(isQuestionPage || isPeoplePage) ? '禁用' : (timeFilterDays > 0 ? timeFilterDays + '天前' : '禁用')}`
         );
