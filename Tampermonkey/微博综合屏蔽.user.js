@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.6
+// @version      0.7
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -14,7 +14,7 @@
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // ==================== 配置区域 ====================
@@ -40,6 +40,9 @@
     // 为所有存储键添加脚本专属前缀
     const STORAGE_PREFIX = 'sixiaolong1117_weibo_';
 
+    const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
+    const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
+
     // WebDAV配置存储键
     const WEBDAV_CONFIG_KEY = STORAGE_PREFIX + 'webdav_config';
     // =================================================
@@ -49,6 +52,8 @@
     let blockedIds = GM_getValue(STORAGE_PREFIX + 'blocked_ids', DEFAULT_BLOCKED_IDS);
     let sourceKeywords = GM_getValue(STORAGE_PREFIX + 'source_keywords', DEFAULT_SOURCE_KEYWORDS);
     let keywordManager = null;
+    let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
+    let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -61,13 +66,12 @@
 
     // 统计隐藏的内容
     let hiddenCount = 0;
-    const hiddenDetails = [];    
+    const hiddenDetails = [];
 
     // 注册油猴菜单命令
     GM_registerMenuCommand('管理屏蔽关键词', showKeywordManager);
-
-    // 添加WebDAV配置菜单
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
+    GM_registerMenuCommand('显示设置', showDisplaySettings);
 
     // 深浅色模式样式
     const styles = `
@@ -346,7 +350,7 @@
         `;
 
         // 保存按钮事件
-        configModal.querySelector('.save-btn').addEventListener('click', function() {
+        configModal.querySelector('.save-btn').addEventListener('click', function () {
             const enabled = configModal.querySelector('#webdav-enabled').checked;
             const url = configModal.querySelector('#webdav-url').value.trim();
             const username = configModal.querySelector('#webdav-username').value.trim();
@@ -375,13 +379,13 @@
         });
 
         // 关闭按钮事件
-        configModal.querySelector('.close-btn').addEventListener('click', function() {
+        configModal.querySelector('.close-btn').addEventListener('click', function () {
             overlay.remove();
             configModal.remove();
         });
 
         // 点击遮罩层关闭
-        overlay.addEventListener('click', function(e) {
+        overlay.addEventListener('click', function (e) {
             if (e.target === overlay) {
                 overlay.remove();
                 configModal.remove();
@@ -440,7 +444,7 @@
                         }
                     });
                 } else {
-                // 目录已存在 → 直接上传
+                    // 目录已存在 → 直接上传
                     uploadToWebDAV();
                 }
             },
@@ -470,7 +474,7 @@
                 },
                 onerror: function (err) {
                     console.error('WebDAV PUT error', err);
-                console.log('❌ WebDAV 同步请求错误');
+                    console.log('❌ WebDAV 同步请求错误');
                 }
             });
         }
@@ -491,27 +495,27 @@
                 headers: {
                     'Authorization': 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password)
                 },
-                onload: function(response) {
+                onload: function (response) {
                     if (response.status === 200) {
                         try {
                             const remoteData = response.response;
-                            
+
                             // 冲突解决：使用最新修改的数据
                             const localTimestamp = webdavConfig.lastSync;
                             const remoteTimestamp = remoteData.lastModified || 0;
-                            
+
                             if (remoteTimestamp > localTimestamp) {
                                 // 远程数据更新，使用远程数据
                                 keywords = remoteData.keywords || keywords;
                                 blockedIds = remoteData.blockedIds || blockedIds;
                                 sourceKeywords = remoteData.sourceKeywords || sourceKeywords;
-                                
+
                                 GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
                                 GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
                                 GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
                                 webdavConfig.lastSync = remoteTimestamp;
                                 GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
-                                
+
                                 console.log('✅ 从WebDAV拉取数据成功');
                                 showNotification('已从云端同步最新数据');
                                 resolve(true);
@@ -533,7 +537,7 @@
                         resolve(false);
                     }
                 },
-                onerror: function(error) {
+                onerror: function (error) {
                     console.error('拉取远程数据错误:', error);
                     resolve(false);
                 }
@@ -546,18 +550,18 @@
         if (Array.isArray(value)) {
             return value;
         }
-        
+
         // 如果是字符串且看起来像是理由/描述，返回fallback
         if (typeof value === 'string' && (value.includes('屏蔽用户:') || value.includes('快捷键添加'))) {
             console.warn('检测到错误传递的字符串参数，使用fallback:', value);
             return Array.isArray(fallback) ? fallback : [];
         }
-        
+
         // 如果是字符串，尝试按行分割
         if (typeof value === 'string') {
             return value.split('\n').filter(line => line.trim().length > 0);
         }
-        
+
         // 其他情况返回空数组
         console.warn('无法修复的数据类型，返回空数组:', typeof value, value);
         return [];
@@ -575,8 +579,8 @@
         GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
         GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
 
-        console.log(`📦 已保存到本地 (${reason})：`, { 
-            keywordsCount: keywords.length, 
+        console.log(`📦 已保存到本地 (${reason})：`, {
+            keywordsCount: keywords.length,
             blockedIdsCount: blockedIds.length,
             sourceKeywordsCount: sourceKeywords.length
         });
@@ -605,13 +609,13 @@
             // 保存修复后的数据
             GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
         }
-        
+
         if (!Array.isArray(keywords)) {
             console.warn('keywords 不是数组，正在修复:', keywords);
             keywords = Array.isArray(keywords) ? keywords : [];
             GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
         }
-        
+
         if (!Array.isArray(blockedIds)) {
             console.warn('blockedIds 不是数组，正在修复:', blockedIds);
             blockedIds = Array.isArray(blockedIds) ? blockedIds : [];
@@ -627,7 +631,7 @@
         const overlay = document.createElement('div');
         overlay.className = 'keyword-manager-overlay';
 
-        
+
         // 在 textarea 的值设置处也要确保是数组
         const safeSourceKeywords = Array.isArray(sourceKeywords) ? sourceKeywords : [];
         const safeKeywords = Array.isArray(keywords) ? keywords : [];
@@ -696,7 +700,7 @@
         };
 
         tabs.forEach(tab => {
-            tab.addEventListener('click', function() {
+            tab.addEventListener('click', function () {
                 // 移除所有active类
                 tabs.forEach(t => t.classList.remove('active'));
                 // 隐藏所有文本域和帮助
@@ -712,7 +716,7 @@
         });
 
         // 保存按钮事件
-        manager.querySelector('.save-btn').addEventListener('click', function() {
+        manager.querySelector('.save-btn').addEventListener('click', function () {
             const keywordsText = textareas.keywords.value;
             const sourcesText = textareas.sources.value;
             const idsText = textareas.ids.value;
@@ -745,14 +749,14 @@
         });
 
         // 关闭按钮事件
-        manager.querySelector('.close-btn').addEventListener('click', function() {
+        manager.querySelector('.close-btn').addEventListener('click', function () {
             overlay.remove();
             manager.remove();
             keywordManager = null;
         });
 
         // 点击遮罩层关闭
-        overlay.addEventListener('click', function(e) {
+        overlay.addEventListener('click', function (e) {
             if (e.target === overlay) {
                 overlay.remove();
                 manager.remove();
@@ -884,7 +888,7 @@
                 showNotification('⚠️ 请先选择要屏蔽的文本');
             }
         }
-        
+
         // 检查是否按下了 F9 键（keyCode 120）- 新增
         if (event.keyCode === 120 && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
             const selectedText = window.getSelection().toString().trim();
@@ -921,6 +925,10 @@
 
     // 添加屏蔽按钮到用户名称旁
     function addBlockButtons() {
+        // 如果设置为不显示按钮,直接返回
+        if (!showBlockButton) {
+            return;
+        }
         // 使用更通用的选择器来找到用户名称元素
         const userNames = document.querySelectorAll('[class*="head_name"], .woo-box-flex .woo-box-item:first-child a');
 
@@ -973,7 +981,7 @@
             blockBtn.title = `屏蔽用户 ${userName} (ID: ${userId})`;
 
             // 按钮点击事件
-            blockBtn.addEventListener('click', function(e) {
+            blockBtn.addEventListener('click', function (e) {
                 e.preventDefault();
                 e.stopPropagation();
 
@@ -1056,7 +1064,7 @@
             if (matchesKeyword || hasBase64Img) {
                 // 修改：找到 Feed_body_3R0rO 元素
                 const feedBody = tag.closest('.woo-panel-main')?.querySelector('.Feed_body_3R0rO') ||
-                               tag.closest('.WB_cardwrap')?.querySelector('.Feed_body_3R0rO');
+                    tag.closest('.WB_cardwrap')?.querySelector('.Feed_body_3R0rO');
 
                 if (feedBody && !feedBody.classList.contains('custom-hidden')) {
                     feedBody.classList.add('custom-hidden');
@@ -1076,15 +1084,24 @@
                         }
                     });
 
-                    // 创建提示元素并添加到父容器
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `
-                        <div class="message-content">
-                            已隐藏包含"${tagText}"标签的内容 ${hasBase64Img ? "(含 Base64 图片标签，通常是广告)" : ""}
-                        </div>
-                    `;
-                    parent.appendChild(message);
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        // 创建提示元素并添加到父容器
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `
+                            <div class="message-content">
+                                已隐藏包含"${tagText}"标签的内容 ${hasBase64Img ? "(含 Base64 图片标签,通常是广告)" : ""}
+                            </div>
+                        `;
+                        parent.appendChild(message);
+                    } else {
+                        // 使用最小化占位符
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'custom-hidden-message minimal-placeholder';
+                        placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                        parent.appendChild(placeholder);
+                    }
 
                     // 控制台记录
                     console.group("屏蔽内容信息");
@@ -1123,15 +1140,24 @@
                         }
                     });
 
-                    // 创建提示元素并添加到父容器
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `
-                        <div class="message-content">
-                             已隐藏包含${displayType}"${displayKeyword}"的内容
-                        </div>
-                    `;
-                    parent.appendChild(message);
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        // 创建提示元素并添加到父容器
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `
+                            <div class="message-content">
+                                已隐藏包含${displayType}"${displayKeyword}"的内容
+                            </div>
+                        `;
+                        parent.appendChild(message);
+                    } else {
+                        // 使用最小化占位符
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'custom-hidden-message minimal-placeholder';
+                        placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                        parent.appendChild(placeholder);
+                    }
 
                     // 记录到控制台
                     logHiddenContent('关键词', contentText.substring(0, 50) + '...', feedBody, `${matchResult.type}: ${matchResult.keyword}`);
@@ -1165,15 +1191,24 @@
                         }
                     });
 
-                    // 创建提示元素并添加到父容器
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        // 创建提示元素并添加到父容器
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `
                         <div class="message-content">
                              已隐藏屏蔽用户: ${userName} (ID: ${userId})
                         </div>
                     `;
-                    parent.appendChild(message);
+                        parent.appendChild(message);
+                    } else {
+                        // 使用最小化占位符
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'custom-hidden-message minimal-placeholder';
+                        placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                        parent.appendChild(placeholder);
+                    }
 
                     // 记录到控制台
                     logHiddenContent('用户ID', userId, feedBody, `屏蔽用户: ${userName}`);
@@ -1208,15 +1243,24 @@
                         }
                     });
 
-                    // 创建提示元素并添加到父容器
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `
+                    // 根据设置决定是否显示占位块
+                    if (showPlaceholder) {
+                        // 创建提示元素并添加到父容器
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `
                         <div class="message-content">
                             已隐藏来源包含${displayType}"${displayKeyword}"的内容
                         </div>
                     `;
-                    parent.appendChild(message);
+                        parent.appendChild(message);
+                    } else {
+                        // 使用最小化占位符
+                        const placeholder = document.createElement('div');
+                        placeholder.className = 'custom-hidden-message minimal-placeholder';
+                        placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                        parent.appendChild(placeholder);
+                    }
 
                     // 记录到控制台
                     logHiddenContent('来源', sourceText, feedBody, `${matchResult.type}: ${matchResult.keyword}`);
@@ -1226,6 +1270,80 @@
 
         // 在函数最后添加：强制更新页面布局
         forceLayoutUpdate();
+    }
+
+    // 显示显示设置界面
+    function showDisplaySettings() {
+        // 创建遮罩层
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        // 创建设置模态框
+        const settingsModal = document.createElement('div');
+        settingsModal.className = 'keyword-manager-modal';
+        settingsModal.innerHTML = `
+            <div class="keyword-manager">
+                <h3>显示设置</h3>
+                <div style="margin-bottom: 15px;">
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="show-block-button" ${showBlockButton ? 'checked' : ''} style="margin-right: 8px;">
+                        显示用户名旁边的屏蔽按钮
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="show-placeholder" ${showPlaceholder ? 'checked' : ''} style="margin-right: 8px;">
+                        显示已屏蔽微博的占位块
+                    </label>
+                </div>
+                <div class="button-group">
+                    <button class="close-btn">取消</button>
+                    <button class="save-btn">保存</button>
+                </div>
+                <div class="help-text">
+                    <div><strong>设置说明:</strong></div>
+                    <div>• 屏蔽按钮: 在用户名旁显示"屏蔽"按钮,方便快速屏蔽用户</div>
+                    <div>• 占位块: 被屏蔽的微博会显示灰色提示框,取消则完全隐藏</div>
+                </div>
+            </div>
+        `;
+
+        // 保存按钮事件
+        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
+            const newShowBlockButton = settingsModal.querySelector('#show-block-button').checked;
+            const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
+
+            showBlockButton = newShowBlockButton;
+            showPlaceholder = newShowPlaceholder;
+
+            GM_setValue(STORAGE_PREFIX + 'show_block_button', showBlockButton);
+            GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
+
+            // 关闭设置窗口
+            overlay.remove();
+            settingsModal.remove();
+
+            showNotification('显示设置已保存');
+
+            // 重新执行屏蔽以应用新设置
+            location.reload(); // 刷新页面以应用新设置
+        });
+
+        // 关闭按钮事件
+        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            settingsModal.remove();
+        });
+
+        // 点击遮罩层关闭
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                settingsModal.remove();
+            }
+        });
+
+        // 添加到页面
+        document.body.appendChild(overlay);
+        document.body.appendChild(settingsModal);
     }
 
     // 使用防抖避免频繁执行
@@ -1241,7 +1359,7 @@
         keywords = ensureArray(keywords, DEFAULT_KEYWORDS);
         blockedIds = ensureArray(blockedIds, DEFAULT_BLOCKED_IDS);
         sourceKeywords = ensureArray(sourceKeywords, DEFAULT_SOURCE_KEYWORDS);
-        
+
         // 保存修复后的数据
         GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
         GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
@@ -1275,7 +1393,7 @@
         });
 
         // 添加全局函数以便在控制台手动查看统计
-        window.getHiddenStats = function() {
+        window.getHiddenStats = function () {
             const tagStats = hiddenDetails.filter(d => d.type === '推荐标签').length;
             const keywordStats = hiddenDetails.filter(d => d.type === '关键词').length;
             const idStats = hiddenDetails.filter(d => d.type === '用户ID').length;
@@ -1298,7 +1416,7 @@
         };
 
         // 添加重置统计的函数
-        window.resetHiddenStats = function() {
+        window.resetHiddenStats = function () {
             hiddenCount = 0;
             hiddenDetails.length = 0;
             console.log('🔄 隐藏统计已重置');
