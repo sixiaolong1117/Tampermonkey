@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.7
+// @version      0.8
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -102,6 +102,11 @@
             border-color: #f1403c;
             color: #f1403c;
             background: rgba(241, 64, 60, 0.05);
+        }
+        .weibo-block-btn-comment {
+            font-size: 11px;
+            padding: 1px 6px;
+            margin-left: 5px;
         }
         .head_name_24eEB {
             display: flex;
@@ -889,7 +894,7 @@
             }
         }
 
-        // 检查是否按下了 F9 键（keyCode 120）- 新增
+        // 检查是否按下了 F9 键（keyCode 120）
         if (event.keyCode === 120 && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
             const selectedText = window.getSelection().toString().trim();
 
@@ -929,7 +934,8 @@
         if (!showBlockButton) {
             return;
         }
-        // 使用更通用的选择器来找到用户名称元素
+
+        // 博主内容区按钮逻辑
         const userNames = document.querySelectorAll('[class*="head_name"], .woo-box-flex .woo-box-item:first-child a');
 
         userNames.forEach(userNameElement => {
@@ -990,7 +996,7 @@
                     const newBlockedIds = [...blockedIds, userId];
                     saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, `屏蔽用户: ${userName}`);
 
-                    console.log(` 已屏蔽用户: "${userName}" (ID: ${userId})`);
+                    console.log(`✅ 已屏蔽用户: "${userName}" (ID: ${userId})`);
 
                     // 显示成功提示
                     showNotification(`已屏蔽用户: ${userName}`);
@@ -1017,10 +1023,82 @@
             console.log(`✅ 已添加屏蔽按钮: ${userName} (${userId})`);
         });
 
-        // 调试信息
-        // if (userNames.length > 0) {
-        //     console.log(`🔍 找到 ${userNames.length} 个用户名称元素`);
-        // }
+        // 为评论区添加屏蔽按钮
+        addCommentBlockButtons();
+    }
+
+    // 为评论区用户添加屏蔽按钮
+    function addCommentBlockButtons() {
+        // 查找所有评论区容器
+        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+
+        commentFeeds.forEach(feed => {
+            // 查找该评论区内的所有评论项
+            const commentItems = feed.querySelectorAll('.wbpro-list');
+
+            commentItems.forEach(item => {
+                // 查找评论中的用户链接（在 .text 内的第一个链接）
+                const textDiv = item.querySelector('.text');
+                if (!textDiv) return;
+
+                const userLink = textDiv.querySelector('a[usercard]');
+                if (!userLink) return;
+
+                // 检查是否已经添加过按钮
+                if (userLink.querySelector('.weibo-block-btn')) {
+                    return;
+                }
+
+                const userId = userLink.getAttribute('usercard');
+                if (!userId) return;
+
+                // 获取用户名
+                let userName = userLink.textContent.trim() || '未知用户';
+
+                // 创建屏蔽按钮
+                const blockBtn = document.createElement('button');
+                blockBtn.className = 'weibo-block-btn weibo-block-btn-comment';
+                blockBtn.textContent = '屏蔽';
+                blockBtn.title = `屏蔽用户 ${userName} (ID: ${userId})`;
+
+                // 按钮点击事件
+                blockBtn.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    // 添加用户ID到屏蔽列表
+                    if (!blockedIds.includes(userId)) {
+                        const newBlockedIds = [...blockedIds, userId];
+                        saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, `屏蔽评论用户: ${userName}`);
+
+                        console.log(`✅ 已屏蔽评论用户: "${userName}" (ID: ${userId})`);
+
+                        // 显示成功提示
+                        showNotification(`已屏蔽用户: ${userName}`);
+
+                        // 调用 hideContent 统一处理屏蔽逻辑
+                        hideContent();
+
+                        // 强制更新页面布局
+                        forceLayoutUpdate();
+                    } else {
+                        showNotification(`用户 ${userName} 已在屏蔽列表中`);
+                    }
+                });
+
+                // 调整用户链接样式以容纳按钮
+                if (window.getComputedStyle(userLink).display === 'inline') {
+                    userLink.style.display = 'inline-flex';
+                    userLink.style.alignItems = 'center';
+                    userLink.style.gap = '5px';
+                }
+
+                // 将按钮添加到用户链接后面
+                userLink.appendChild(blockBtn);
+
+                console.log(`✅ 已添加评论区屏蔽按钮: ${userName} (${userId})`);
+            });
+        });
     }
 
     // 强制更新页面布局
@@ -1046,8 +1124,22 @@
     function hideContent() {
         // 先添加屏蔽按钮
         addBlockButtons();
-
         // 方法1: 通过推荐标签屏蔽
+        hideByTags();
+        // 方法2: 通过关键词屏蔽
+        hideByKeywords();
+        // 方法3: 通过用户ID屏蔽
+        hideByUserId();
+        // 方法4: 通过来源关键词屏蔽
+        hideBySourceKeywords();
+        // 方法5: 屏蔽评论区用户
+        hideCommentsByUserId();
+        // 强制更新页面布局
+        forceLayoutUpdate();
+    }
+
+    // 通过标签屏蔽
+    function hideByTags() {
         const tags = Array.from(document.querySelectorAll('*[class], [node-type="feed_list_top"]')).filter(el =>
             Array.from(el.classList).some(c => c.startsWith('wbpro-tag')) || el.getAttribute('node-type') === 'feed_list_top'
         );
@@ -1112,8 +1204,10 @@
                 }
             }
         });
+    }
 
-        // 方法2: 通过关键词屏蔽
+    // 通过关键词屏蔽
+    function hideByKeywords() {
         const feedContents = document.querySelectorAll('.wbpro-feed-content, .weibo-text');
         feedContents.forEach(feedContent => {
             const contentText = feedContent.textContent.trim();
@@ -1164,8 +1258,10 @@
                 }
             }
         });
+    }
 
-        // 方法3: 通过用户ID屏蔽
+    // 通过用户ID屏蔽
+    function hideByUserId() {
         const userLinks = document.querySelectorAll('a[usercard], [usercard] a');
         userLinks.forEach(userLink => {
             const userId = userLink.getAttribute('usercard');
@@ -1215,8 +1311,10 @@
                 }
             }
         });
+    }
 
-        // 方法4: 通过来源关键词屏蔽
+    // 通过来源关键词屏蔽
+    function hideBySourceKeywords() {
         const sourceTags = document.querySelectorAll('.head-info_cut_1tPQI.head-info_source_2zcEX');
         sourceTags.forEach(sourceTag => {
             const sourceText = sourceTag.textContent.trim();
@@ -1267,9 +1365,64 @@
                 }
             }
         });
+    }
 
-        // 在函数最后添加：强制更新页面布局
-        forceLayoutUpdate();
+    // 屏蔽评论区用户
+    function hideCommentsByUserId() {
+        // 查找所有评论区容器（支持两种类型）
+        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+
+        commentFeeds.forEach(feed => {
+            // 查找该评论区内的所有评论项
+            const commentItems = feed.querySelectorAll('.wbpro-list');
+
+            commentItems.forEach(item => {
+                // 查找用户链接
+                const userLink = item.querySelector('a[usercard]');
+
+                if (userLink) {
+                    const userId = userLink.getAttribute('usercard');
+
+                    if (userId && isUserIdBlocked(userId)) {
+                        // 检查是否已经被隐藏
+                        if (!item.classList.contains('custom-hidden-comment')) {
+                            item.classList.add('custom-hidden-comment');
+
+                            // 获取用户名
+                            let userName = '未知用户';
+                            const nameElement = userLink.textContent.trim();
+                            if (nameElement) {
+                                userName = nameElement;
+                            }
+
+                            // 根据设置决定是否显示占位块
+                            if (showPlaceholder) {
+                                // 隐藏原内容但保留容器
+                                Array.from(item.children).forEach(child => {
+                                    child.style.display = 'none';
+                                });
+
+                                // 添加提示信息
+                                const message = document.createElement('div');
+                                message.className = 'custom-hidden-message';
+                                message.innerHTML = `
+                                <div class="message-content" style="padding: 8px; font-size: 12px;">
+                                    已隐藏用户评论: ${userName} (ID: ${userId})
+                                </div>
+                            `;
+                                item.appendChild(message);
+                            } else {
+                                // 完全隐藏
+                                item.style.display = 'none';
+                            }
+
+                            // 记录到控制台
+                            logHiddenContent('评论区用户ID', userId, item, `屏蔽评论用户: ${userName}`);
+                        }
+                    }
+                }
+            });
+        });
     }
 
     // 显示显示设置界面
