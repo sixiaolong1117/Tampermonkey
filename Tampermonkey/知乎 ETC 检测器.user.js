@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎 ETC 检测器
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.1
+// @version      0.2
 // @description  在回答详情页使用，用 LLM 检测评论质量，标红存在阅读障碍的用户
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -14,23 +14,31 @@
 // @connect      localhost
 // @connect      127.0.0.1
 // @connect      www.zhihu.com
+// @connect      cloud.infini-ai.com
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // 配置项
     const CONFIG = {
+        aiProvider: GM_getValue('aiProvider', 'ollama'), // 当前使用的 AI 平台
+        contextLength: GM_getValue('contextLength', 3000),
+
+        // Ollama 配置
         ollamaUrl: GM_getValue('ollamaUrl', 'http://localhost:11434'),
         ollamaModel: GM_getValue('ollamaModel', 'qwen2.5:7b'),
-        contextLength: GM_getValue('contextLength', 3000)
+
+        // Infini-AI 配置
+        infiniApiKey: GM_getValue('infiniApiKey', ''),
+        infiniModel: GM_getValue('infiniModel', 'deepseek-v3.2-exp')
     };
 
     // 检测深色模式
     const isDarkMode = () => {
         return document.documentElement.classList.contains('theme-dark') ||
-               document.body.classList.contains('dark') ||
-               window.matchMedia('(prefers-color-scheme: dark)').matches;
+            document.body.classList.contains('dark') ||
+            window.matchMedia('(prefers-color-scheme: dark)').matches;
     };
 
     // 获取自适应颜色
@@ -59,297 +67,185 @@
 
     // 显示设置面板
     function showSettingsPanel() {
-        // 避免重复创建
-        if (document.getElementById('ollama-settings-panel')) {
-            document.getElementById('ollama-settings-panel').style.display = 'flex';
+        if (document.getElementById('ai-settings-panel')) {
+            document.getElementById('ai-settings-panel').style.display = 'flex';
             return;
         }
 
         const colors = getColors();
-        
         const overlay = document.createElement('div');
-        overlay.id = 'ollama-settings-panel';
+        overlay.id = 'ai-settings-panel';
         overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            z-index: 99999;
-        `;
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.5); display: flex; justify-content: center;
+        align-items: center; z-index: 99999;
+    `;
 
         const panel = document.createElement('div');
         panel.style.cssText = `
-            background: ${colors.panelBg};
-            border-radius: 12px;
-            box-shadow: ${colors.shadow};
-            width: 500px;
-            max-width: 90%;
-            max-height: 80vh;
-            overflow-y: auto;
-        `;
+        background: ${colors.panelBg};
+        border-radius: 12px;
+        box-shadow: ${colors.shadow};
+        width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto;
+    `;
 
         panel.innerHTML = `
-            <div style="
-                padding: 20px;
-                border-bottom: 2px solid ${colors.panelBorder};
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            ">
-                <h2 style="margin: 0; color: ${colors.textPrimary}; font-size: 20px;">⚙️ Ollama 设置</h2>
-                <button id="close-settings" style="
-                    background: transparent;
-                    border: none;
-                    font-size: 24px;
-                    cursor: pointer;
-                    color: ${colors.textSecondary};
-                    padding: 0;
-                    width: 30px;
-                    height: 30px;
-                    line-height: 30px;
-                ">×</button>
+        <div style="padding:20px; border-bottom:2px solid ${colors.panelBorder};
+            display:flex; justify-content:space-between; align-items:center;">
+            <h2 style="margin:0; color:${colors.textPrimary}; font-size:20px;">⚙️ AI 设置</h2>
+            <button id="close-settings" style="background:transparent;border:none;
+                font-size:24px;cursor:pointer;color:${colors.textSecondary};">×</button>
+        </div>
+
+        <div style="padding:20px;">
+            <!-- AI 平台选择 -->
+            <div style="margin-bottom:20px;">
+                <label style="display:block;margin-bottom:8px;color:${colors.textPrimary};font-weight:500;">🤖 选择 AI 平台</label>
+                <select id="ai-provider-select" style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
+                    <option value="ollama" ${CONFIG.aiProvider === 'ollama' ? 'selected' : ''}>Ollama (本地模型)</option>
+                    <option value="infini" ${CONFIG.aiProvider === 'infini' ? 'selected' : ''}>Infini-AI (云端)</option>
+                </select>
             </div>
-            
-            <div style="padding: 20px;">
-                <!-- Ollama 地址 -->
-                <div style="margin-bottom: 20px;">
-                    <label style="
-                        display: block;
-                        margin-bottom: 8px;
-                        color: ${colors.textPrimary};
-                        font-weight: 500;
-                    ">🌐 Ollama 地址</label>
-                    <input 
-                        type="text" 
-                        id="ollama-url-input" 
-                        value="${CONFIG.ollamaUrl}"
-                        placeholder="http://localhost:11434"
-                        style="
-                            width: 100%;
-                            padding: 10px;
-                            border: 1px solid ${colors.inputBorder};
-                            border-radius: 6px;
-                            background: ${colors.inputBg};
-                            color: ${colors.textPrimary};
-                            font-size: 14px;
-                            box-sizing: border-box;
-                        "
-                    />
-                    <small style="color: ${colors.textSecondary}; display: block; margin-top: 5px;">
-                        默认: http://localhost:11434
-                    </small>
-                </div>
 
-                <!-- 模型名称 -->
-                <div style="margin-bottom: 20px;">
-                    <label style="
-                        display: block;
-                        margin-bottom: 8px;
-                        color: ${colors.textPrimary};
-                        font-weight: 500;
-                    ">🤖 模型名称</label>
-                    <input 
-                        type="text" 
-                        id="ollama-model-input" 
-                        value="${CONFIG.ollamaModel}"
-                        placeholder="qwen2.5:7b"
-                        style="
-                            width: 100%;
-                            padding: 10px;
-                            border: 1px solid ${colors.inputBorder};
-                            border-radius: 6px;
-                            background: ${colors.inputBg};
-                            color: ${colors.textPrimary};
-                            font-size: 14px;
-                            box-sizing: border-box;
-                        "
-                    />
-                    <small style="color: ${colors.textSecondary}; display: block; margin-top: 5px;">
-                        推荐: qwen2.5:7b, llama3.1:8b, mistral:7b
-                    </small>
-                </div>
-
-                <!-- 上下文长度 -->
-                <div style="margin-bottom: 20px;">
-                    <label style="
-                        display: block;
-                        margin-bottom: 8px;
-                        color: ${colors.textPrimary};
-                        font-weight: 500;
-                    ">📏 回答上下文长度（字数）</label>
-                    <input 
-                        type="number" 
-                        id="context-length-input" 
-                        value="${CONFIG.contextLength}"
-                        min="1000"
-                        max="10000"
-                        step="500"
-                        style="
-                            width: 100%;
-                            padding: 10px;
-                            border: 1px solid ${colors.inputBorder};
-                            border-radius: 6px;
-                            background: ${colors.inputBg};
-                            color: ${colors.textPrimary};
-                            font-size: 14px;
-                            box-sizing: border-box;
-                        "
-                    />
-                    <small style="color: ${colors.textSecondary}; display: block; margin-top: 5px;">
-                        建议: 3000-5000 字（越大越准确，但速度越慢）
-                    </small>
-                </div>
-
-                <!-- 测试连接按钮 -->
-                <button id="test-connection" style="
-                    width: 100%;
-                    padding: 12px;
-                    background: ${colors.infoBtn};
-                    color: white;
-                    border: none;
-                    border-radius: 6px;
-                    cursor: pointer;
-                    font-size: 14px;
-                    font-weight: 500;
-                    margin-bottom: 15px;
-                ">🔌 测试连接</button>
-
-                <div id="test-result" style="
-                    padding: 10px;
-                    border-radius: 6px;
-                    font-size: 13px;
-                    display: none;
-                    margin-bottom: 15px;
-                "></div>
-
-                <!-- 保存按钮 -->
-                <div style="display: flex; gap: 10px;">
-                    <button id="save-settings" style="
-                        flex: 1;
-                        padding: 12px;
-                        background: ${colors.successBtn};
-                        color: white;
-                        border: none;
-                        border-radius: 6px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        font-weight: 500;
-                    ">💾 保存设置</button>
-                    
-                    <button id="reset-settings" style="
-                        flex: 1;
-                        padding: 12px;
-                        background: ${colors.warningBtn};
-                        color: white;
-                        border: none;
-                        border-radius: 6px;
-                        cursor: pointer;
-                        font-size: 14px;
-                        font-weight: 500;
-                    ">🔄 恢复默认</button>
-                </div>
+            <!-- Ollama 设置 -->
+            <div id="ollama-settings" style="margin-bottom:20px;display:${CONFIG.aiProvider === 'ollama' ? 'block' : 'none'};">
+                <label style="display:block;margin-bottom:8px;color:${colors.textPrimary};">🌐 Ollama 地址</label>
+                <input id="ollama-url-input" type="text" value="${CONFIG.ollamaUrl}"
+                    placeholder="http://localhost:11434" style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
+                <label style="display:block;margin-top:12px;margin-bottom:8px;color:${colors.textPrimary};">🧠 模型名称</label>
+                <input id="ollama-model-input" type="text" value="${CONFIG.ollamaModel}"
+                    placeholder="qwen2.5:7b" style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
             </div>
-        `;
+
+            <!-- Infini-AI 设置 -->
+            <div id="infini-settings" style="margin-bottom:20px;display:${CONFIG.aiProvider === 'infini' ? 'block' : 'none'};">
+                <label style="display:block;margin-bottom:8px;color:${colors.textPrimary};">🔑 Infini API Key</label>
+                <input id="infini-api-key-input" type="password" value="${CONFIG.infiniApiKey}" placeholder="输入 API Key" style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
+                <label style="display:block;margin-top:12px;margin-bottom:8px;color:${colors.textPrimary};">🧠 模型名称</label>
+                <input id="infini-model-input" type="text" value="${CONFIG.infiniModel}" placeholder="deepseek-v3.2-exp" style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
+            </div>
+
+            <!-- 上下文长度 -->
+            <div style="margin-bottom:20px;">
+                <label style="display:block;margin-bottom:8px;color:${colors.textPrimary};font-weight:500;">📏 上下文长度（字）</label>
+                <input id="context-length-input" type="number" value="${CONFIG.contextLength}" min="1000" max="10000" step="500"
+                    style="
+                    display:block;
+                    width:calc(100% - 4px);
+                    padding:10px 12px;
+                    margin-top:4px;
+                    border:1px solid ${colors.inputBorder};
+                    border-radius:8px;
+                    background:${colors.inputBg};
+                    color:${colors.textPrimary};
+                    font-size:14px;
+                    box-sizing:border-box;
+                ">
+            </div>
+
+            <!-- 按钮区 -->
+            <div style="display:flex;gap:10px;">
+                <button id="save-settings" style="flex:1;padding:12px;background:${colors.successBtn};
+                    color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;">💾 保存</button>
+                <button id="reset-settings" style="flex:1;padding:12px;background:${colors.warningBtn};
+                    color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;">🔄 恢复默认</button>
+            </div>
+        </div>
+    `;
 
         overlay.appendChild(panel);
         document.body.appendChild(overlay);
 
-        // 关闭面板
-        const closePanel = () => {
-            overlay.style.display = 'none';
-        };
+        // 切换 AI 平台动态显示对应设置
+        const providerSelect = panel.querySelector('#ai-provider-select');
+        providerSelect.addEventListener('change', e => {
+            document.getElementById('ollama-settings').style.display = e.target.value === 'ollama' ? 'block' : 'none';
+            document.getElementById('infini-settings').style.display = e.target.value === 'infini' ? 'block' : 'none';
+        });
 
-        document.getElementById('close-settings').onclick = closePanel;
-        overlay.onclick = (e) => {
-            if (e.target === overlay) closePanel();
-        };
-
-        // 测试连接
-        document.getElementById('test-connection').onclick = async () => {
-            const testBtn = document.getElementById('test-connection');
-            const testResult = document.getElementById('test-result');
-            const url = document.getElementById('ollama-url-input').value;
-            
-            testBtn.disabled = true;
-            testBtn.textContent = '🔄 测试中...';
-            testResult.style.display = 'block';
-            testResult.style.background = colors.inputBg;
-            testResult.style.color = colors.textSecondary;
-            testResult.textContent = '正在连接...';
-
-            try {
-                const response = await new Promise((resolve, reject) => {
-                    GM_xmlhttpRequest({
-                        method: 'GET',
-                        url: `${url}/api/tags`,
-                        timeout: 5000,
-                        onload: resolve,
-                        onerror: reject,
-                        ontimeout: () => reject(new Error('连接超时'))
-                    });
-                });
-
-                if (response.status === 200) {
-                    const data = JSON.parse(response.responseText);
-                    const models = data.models || [];
-                    testResult.style.background = '#e8f5e9';
-                    testResult.style.color = '#2e7d32';
-                    testResult.innerHTML = `
-                        ✅ 连接成功！<br>
-                        发现 ${models.length} 个模型: ${models.map(m => m.name).join(', ') || '无'}
-                    `;
-                } else {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-            } catch (error) {
-                testResult.style.background = colors.errorBg;
-                testResult.style.color = colors.errorText;
-                testResult.textContent = `❌ 连接失败: ${error.message}`;
-            }
-
-            testBtn.disabled = false;
-            testBtn.textContent = '🔌 测试连接';
-        };
+        document.getElementById('close-settings').onclick = () => overlay.remove();
 
         // 保存设置
         document.getElementById('save-settings').onclick = () => {
-            const url = document.getElementById('ollama-url-input').value.trim();
-            const model = document.getElementById('ollama-model-input').value.trim();
-            const contextLength = parseInt(document.getElementById('context-length-input').value);
+            CONFIG.aiProvider = providerSelect.value;
+            CONFIG.contextLength = parseInt(document.getElementById('context-length-input').value);
 
-            if (!url || !model) {
-                alert('❌ 请填写完整的配置信息！');
-                return;
-            }
+            CONFIG.ollamaUrl = document.getElementById('ollama-url-input').value.trim();
+            CONFIG.ollamaModel = document.getElementById('ollama-model-input').value.trim();
 
-            if (contextLength < 1000 || contextLength > 10000) {
-                alert('❌ 上下文长度必须在 1000-10000 之间！');
-                return;
-            }
+            CONFIG.infiniApiKey = document.getElementById('infini-api-key-input').value.trim();
+            CONFIG.infiniModel = document.getElementById('infini-model-input').value.trim();
 
-            CONFIG.ollamaUrl = url;
-            CONFIG.ollamaModel = model;
-            CONFIG.contextLength = contextLength;
+            for (const k in CONFIG) GM_setValue(k, CONFIG[k]);
 
-            GM_setValue('ollamaUrl', url);
-            GM_setValue('ollamaModel', model);
-            GM_setValue('contextLength', contextLength);
-
-            alert('✅ 设置已保存！');
-            closePanel();
+            alert('✅ 设置已保存');
+            overlay.remove();
         };
 
         // 恢复默认
         document.getElementById('reset-settings').onclick = () => {
             if (confirm('确定要恢复默认设置吗？')) {
+                document.getElementById('ai-provider-select').value = 'ollama';
                 document.getElementById('ollama-url-input').value = 'http://localhost:11434';
                 document.getElementById('ollama-model-input').value = 'qwen2.5:7b';
                 document.getElementById('context-length-input').value = '3000';
+                document.getElementById('infini-api-key-input').value = '';
+                document.getElementById('infini-model-input').value = 'deepseek-v3.2-exp';
             }
         };
     }
@@ -372,7 +268,7 @@
                     stream: false
                 }),
                 timeout: 90000, // 增加超时时间到90秒
-                onload: function(response) {
+                onload: function (response) {
                     try {
                         const data = JSON.parse(response.responseText);
                         resolve(data.response);
@@ -380,12 +276,49 @@
                         reject(e);
                     }
                 },
-                onerror: function(error) {
+                onerror: function (error) {
                     reject(error);
                 },
-                ontimeout: function() {
+                ontimeout: function () {
                     reject(new Error('请求超时'));
                 }
+            });
+        });
+    }
+
+    // Infini-AI API 调用函数
+    function callInfiniAI(prompt) {
+        return new Promise((resolve, reject) => {
+            const apiKey = CONFIG.infiniApiKey;
+            if (!apiKey) {
+                return reject(new Error('未设置 Infini API Key'));
+            }
+
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: 'https://cloud.infini-ai.com/maas/v1/chat/completions',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                data: JSON.stringify({
+                    model: CONFIG.infiniModel,
+                    messages: [
+                        { role: 'user', content: prompt }
+                    ]
+                }),
+                timeout: 90000,
+                onload: function (response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        const result = data.choices?.[0]?.message?.content || '';
+                        resolve(result);
+                    } catch (e) {
+                        reject(e);
+                    }
+                },
+                onerror: reject,
+                ontimeout: () => reject(new Error('Infini 请求超时'))
             });
         });
     }
@@ -432,9 +365,10 @@
         // 使用配置的上下文长度
         const answerSummary = answerContent.substring(0, CONFIG.contextLength);
 
-        const prompt = `你是一个评论质量分析助手。请严格判断评论是否是明显的抬杠行为。
+        const prompt = `你是一个评论质量分析助手，请根据以下逻辑严格判断评论是否属于“明显的抬杠行为”。
 
-问题标题：${title}
+问题标题：
+${title}
 
 回答内容（前${CONFIG.contextLength}字）：
 ${answerSummary}
@@ -442,52 +376,60 @@ ${answerSummary}
 评论内容：
 ${commentContent}
 
-判断标准（请严格遵守）：
+----------------------------
+【判断流程（必须严格按顺序执行）】
 
 第一步：评论是否在反驳回答？
-- 如果评论只是补充、提问、感谢、讨论相关话题 → 直接判定"正常评论"
-- 如果评论明确表达不同意、反对、质疑回答的核心观点 → 继续第二步
+- 如果评论只是补充、提问、感谢、相关讨论 → 判定为「正常评论」
+- 如果评论明确表达不同意、反对、质疑回答核心观点 → 继续第二步
 
-第二步：如果是反驳，是否属于明显低质量抬杠？必须**同时满足以下所有条件**：
-1. 反驳的内容明显无理（不是"可能无理"，而是"明显无理"）
-2. 且属于以下至少一种情况：
-   - 【故意曲解】：回答已清楚说明A，评论故意理解成B然后攻击
-   - 【明显错误】：使用可被客观验证为错误的常识/事实来反驳
-   - 【纯粹诡辩】：逻辑明显不通，纯粹为了反对而反对
+第二步：评论是否阅读了回答？
+- 如果评论的反驳内容在回答中已有明确解释，但评论仍质疑 → 判定为「抬杠（未读回答）」
+- 如果评论的反驳内容明显脱离回答主题、与问题无关 → 判定为「抬杠（不相关）」
+- 否则 → 继续第三步
 
-**严格排除以下情况（必须判定为"正常评论"）：**
-- 评论提出不同观点，且观点本身有一定合理性或可讨论空间
-- 评论基于自身经验/角度提出质疑，即使与回答不符
-- 评论语气不好、情绪化，但核心观点有一定依据
-- 评论理解有偏差，但不是故意曲解（可能是真的没理解）
-- 评论的反驳逻辑虽不完美，但不是明显荒谬
-- 双方观点属于"见仁见智"的范畴
-- 无法100%确定评论是在无理取闹
+第三步：评论是否理解了回答？
+- 如果评论明显曲解了回答的核心观点（回答说明A，评论理解成B） → 判定为「抬杠（曲解）」
+- 如果评论断章取义、选择性理解，只截取片段反驳整体 → 判定为「抬杠（断章取义）」
+- 否则 → 继续第四步
 
-**判定原则：存疑从宽，只抓"明显"抬杠**
-如果你对是否属于抬杠有任何犹豫或不确定 → 判定为"正常评论"
+第四步：评论是否合理反驳？
+- 如果评论提出的反驳有逻辑、有一定事实或个人经验依据 → 判定为「正常评论」
+- 如果评论的反驳明显无理（逻辑错误、常识错误、纯粹反对而反对） → 判定为「抬杠（无理反驳）」
 
-请严格按照以下格式回答（不要有多余内容）：
-抬杠|具体理由
-或
-正常评论|具体理由
+----------------------------
+【排除条件】
+以下情况一律视为「正常评论」：
+- 评论观点与回答不同但仍有合理依据
+- 评论表达粗鲁但内容有逻辑
+- 评论确实看了回答，只是理解角度不同
+- 评论内容无法确定是否反驳或有歧义
 
-理由必须具体说明判断依据，不超过30字。`;
+【最终判定输出格式】  
+请严格按照以下格式回答（不要有多余内容）：  
+抬杠|具体理由  
+或  
+正常评论|具体理由  
+
+理由必须简短具体（≤30字），说明关键判断依据。`;
+
 
         try {
-            const response = await callOllama(prompt);
-            console.log('AI 分析结果:', response);
+            let response = '';
+            if (CONFIG.aiProvider === 'infini') {
+                response = await callInfiniAI(prompt);
+            } else if (CONFIG.aiProvider === 'ollama') {
+                response = await callOllama(prompt);
+            } else {
+                throw new Error(`未知的 AI 平台: ${CONFIG.aiProvider}`);
+            }
 
             const parts = response.trim().split('|');
             const judgment = parts[0] || '';
             const reason = parts[1] || response.trim();
-
             const isLowQuality = judgment.includes('抬杠');
-            return {
-                isLowQuality,
-                reason: reason,
-                fullResponse: response.trim()
-            };
+
+            return { isLowQuality, reason, fullResponse: response.trim() };
         } catch (error) {
             console.error('AI 分析失败:', error);
             throw error;
@@ -849,8 +791,16 @@ ${commentContent}
                     font-size: 11px;
                     color: ${colors.textSecondary};
                 ">
-                    📊 上下文: ${CONFIG.contextLength} 字<br>
-                    🤖 模型: ${CONFIG.ollamaModel}
+                    ${(() => {
+                        const aiProvider = GM_getValue('aiProvider', 'ollama');
+                        const contextLength = GM_getValue('contextLength', 3000);
+                        const ollamaModel = GM_getValue('ollamaModel', 'qwen2.5:7b');
+                        const infiniModel = GM_getValue('infiniModel', 'deepseek-v3.2-exp');
+                        const engineName = aiProvider === 'infini'
+                            ? `Infini-AI (${infiniModel})`
+                            : `Ollama (${ollamaModel})`;
+                        return `⚙️ 引擎: ${engineName}<br>📊 上下文: ${contextLength} 字`;
+                    })()}
                 </div>
             </div>
         `;
@@ -980,7 +930,12 @@ ${commentContent}
     // 初始化
     function init() {
         console.log('知乎评论智能检测器已启动');
-        console.log('Ollama 配置:', CONFIG);
+        console.log('当前配置:', {
+            useInfini: CONFIG.useInfini,
+            infiniModel: CONFIG.infiniModel,
+            ollamaModel: CONFIG.ollamaModel,
+            contextLength: CONFIG.contextLength
+        });
 
         setTimeout(() => {
             addGlobalDetectionButton();
