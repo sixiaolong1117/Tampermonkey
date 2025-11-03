@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.8
+// @version      0.9
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -39,7 +39,7 @@
 
     // 为所有存储键添加脚本专属前缀
     const STORAGE_PREFIX = 'sixiaolong1117_weibo_';
-
+    const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
 
@@ -51,6 +51,7 @@
     let keywords = GM_getValue(STORAGE_PREFIX + 'keywords', DEFAULT_KEYWORDS);
     let blockedIds = GM_getValue(STORAGE_PREFIX + 'blocked_ids', DEFAULT_BLOCKED_IDS);
     let sourceKeywords = GM_getValue(STORAGE_PREFIX + 'source_keywords', DEFAULT_SOURCE_KEYWORDS);
+    let timeFilterDays = GM_getValue(TIME_FILTER_DAYS_KEY, 0);
     let keywordManager = null;
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
@@ -72,6 +73,7 @@
     GM_registerMenuCommand('管理屏蔽关键词', showKeywordManager);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('显示设置', showDisplaySettings);
+    GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
 
     // 深浅色模式样式
     const styles = `
@@ -248,6 +250,26 @@
                 color: #f1403c;
                 background: rgba(241, 64, 60, 0.1);
             }
+        }    
+        .time-filter-hidden-message {
+            margin: 10px 0;
+        }
+        .time-filter-hidden-message .message-content {
+            padding: 15px;
+            text-align: center;
+            border: 1px solid;
+            border-radius: 6px;
+            font-size: 14px;
+            background: var(--time-filter-bg, #fff3cd);
+            color: var(--time-filter-color, #856404);
+            border-color: var(--time-filter-border, #ffeaa7);
+        }
+        @media (prefers-color-scheme: dark) {
+            .time-filter-hidden-message .message-content {
+                background: #332701;
+                color: #f1c40f;
+                border-color: #665200;
+            }
         }
     `;
 
@@ -306,6 +328,7 @@
             `🔤 屏蔽关键词: ${keywords.length} 个\n` +
             `📱 屏蔽来源: ${sourceKeywords.length} 个\n` +
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
+            `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
             `⌨️  按 F9 添加选中文本到来源屏蔽词\n` +
@@ -414,6 +437,7 @@
             keywords: keywords,
             blockedIds: blockedIds,
             sourceKeywords: sourceKeywords,
+            timeFilterDays: timeFilterDays,
             lastModified: Date.now(),
             reason: reason,
             timestamp: new Date().toISOString()
@@ -492,10 +516,18 @@
             return Promise.resolve(false);
         }
 
+        // ✅ 自动补全 URL 末尾斜杠
+        let baseUrl = webdavConfig.url;
+        if (!baseUrl.endsWith('/')) {
+            baseUrl += '/';
+        }
+
+        const fileUrl = baseUrl + 'WeiboGeneralBlock/weibo_blocklist.json';
+
         return new Promise((resolve) => {
             GM_xmlhttpRequest({
                 method: 'GET',
-                url: webdavConfig.url + 'weibo_blocklist.json',
+                url: fileUrl,
                 responseType: 'json',
                 headers: {
                     'Authorization': 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password)
@@ -514,10 +546,13 @@
                                 keywords = remoteData.keywords || keywords;
                                 blockedIds = remoteData.blockedIds || blockedIds;
                                 sourceKeywords = remoteData.sourceKeywords || sourceKeywords;
+                                timeFilterDays = remoteData.timeFilterDays !== undefined ? remoteData.timeFilterDays : timeFilterDays;
 
                                 GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
                                 GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
                                 GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
+                                GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
+
                                 webdavConfig.lastSync = remoteTimestamp;
                                 GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
 
@@ -583,23 +618,18 @@
         GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
         GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
         GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
+        GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
 
         console.log(`📦 已保存到本地 (${reason})：`, {
             keywordsCount: keywords.length,
             blockedIdsCount: blockedIds.length,
-            sourceKeywordsCount: sourceKeywords.length
+            sourceKeywordsCount: sourceKeywords.length,
+            timeFilterDays: timeFilterDays
         });
 
         // ✅ 同步到 WebDAV
         if (webdavConfig && webdavConfig.enabled) {
-            const backupData = {
-                reason,
-                timestamp: new Date().toISOString(),
-                keywords,
-                blockedIds,
-                sourceKeywords
-            };
-            syncToWebDAV(backupData);
+            syncToWebDAV(reason);
         }
 
         return true;
@@ -1132,10 +1162,58 @@
         hideByUserId();
         // 方法4: 通过来源关键词屏蔽
         hideBySourceKeywords();
-        // 方法5: 屏蔽评论区用户
+        // 方法5: 通过时间过滤屏蔽
+        hideByTimeFilter();
+        // 方法6: 屏蔽评论区用户
         hideCommentsByUserId();
         // 强制更新页面布局
         forceLayoutUpdate();
+    }
+
+    // 通过时间过滤屏蔽
+    function hideByTimeFilter() {
+        const feedBodies = document.querySelectorAll('.Feed_body_3R0rO');
+
+        feedBodies.forEach(feedBody => {
+            // 跳过已经被隐藏的内容
+            if (feedBody.classList.contains('custom-hidden')) {
+                return;
+            }
+
+            if (isWeiboTooOld(feedBody)) {
+                feedBody.classList.add('custom-hidden');
+
+                // 隐藏所有同级子元素
+                const parent = feedBody.parentElement;
+                Array.from(parent.children).forEach(child => {
+                    if (!child.classList.contains('custom-hidden-message') &&
+                        !child.classList.contains('time-filter-hidden-message')) {
+                        child.style.display = 'none';
+                    }
+                });
+
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'time-filter-hidden-message';
+                    message.innerHTML = `
+                    <div class="message-content">
+                        ⏰ 已隐藏 ${timeFilterDays} 天前的微博
+                    </div>
+                `;
+                    parent.appendChild(message);
+                } else {
+                    // 使用最小化占位符
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'time-filter-hidden-message minimal-placeholder';
+                    placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                    parent.appendChild(placeholder);
+                }
+
+                // 记录到控制台
+                logHiddenContent('时间过滤', `${timeFilterDays}天前`, feedBody, '时间过滤');
+            }
+        });
     }
 
     // 通过标签屏蔽
@@ -1497,6 +1575,104 @@
         // 添加到页面
         document.body.appendChild(overlay);
         document.body.appendChild(settingsModal);
+    }
+
+    // 显示时间过滤配置界面函数
+    function showTimeFilterConfig() {
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        const configModal = document.createElement('div');
+        configModal.className = 'keyword-manager-modal';
+        configModal.innerHTML = `
+        <div class="keyword-manager">
+            <h3>设置时间过滤</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: block; margin-bottom: 10px; font-weight: bold;">
+                    隐藏多少天之前的微博：
+                </label>
+                <input type="number" id="time-filter-days" 
+                    value="${timeFilterDays}" 
+                    min="0" max="3650" 
+                    style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; background: var(--input-bg, white); color: var(--input-color, #333);">
+            </div>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div><strong>时间过滤说明：</strong></div>
+                <div>• 设置隐藏多少天之前的微博</div>
+                <div>• 设置为 0 表示禁用时间过滤</div>
+                <div>• 基于微博的发布时间进行过滤</div>
+                <div>• 对首页的所有微博生效</div>
+            </div>
+        </div>
+    `;
+
+        configModal.querySelector('.save-btn').addEventListener('click', function () {
+            const daysInput = configModal.querySelector('#time-filter-days');
+            const newDays = parseInt(daysInput.value);
+
+            if (!isNaN(newDays) && newDays >= 0) {
+                timeFilterDays = newDays;
+                GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
+
+                overlay.remove();
+                configModal.remove();
+
+                showNotification(`时间过滤已设置为: ${timeFilterDays}天`);
+
+                // 重新执行屏蔽
+                hideContent();
+            } else {
+                showNotification('请输入有效的天数');
+            }
+        });
+
+        configModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            configModal.remove();
+        });
+
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                configModal.remove();
+            }
+        });
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(configModal);
+
+        // 聚焦到输入框并选中文本
+        const input = configModal.querySelector('#time-filter-days');
+        input.focus();
+        input.select();
+    }
+
+    // 时间过滤检查函数
+    function isWeiboTooOld(feedBody) {
+        if (timeFilterDays <= 0) return false;
+
+        // 查找时间链接元素
+        const timeLink = feedBody.querySelector('a[class*="head-info_time"]');
+        if (!timeLink) return false;
+
+        const dateString = timeLink.getAttribute('title');
+        if (!dateString) return false;
+
+        try {
+            const weiboDate = new Date(dateString);
+            const currentDate = new Date();
+            const timeDiff = currentDate - weiboDate;
+            const daysDiff = timeDiff / (1000 * 60 * 60 * 24);
+
+            return daysDiff > timeFilterDays;
+        } catch (e) {
+            console.warn('解析日期失败:', dateString, e);
+            return false;
+        }
     }
 
     // 使用防抖避免频繁执行
