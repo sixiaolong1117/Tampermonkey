@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         知乎 ETC 检测器
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/sixiaolong1117/Tampermonkey
 // @version      0.1
 // @description  在回答详情页使用，用 LLM 检测评论质量，标红存在阅读障碍的用户
 // @license      MIT
