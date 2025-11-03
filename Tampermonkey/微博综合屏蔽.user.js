@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.9
+// @version      0.10
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -965,61 +965,60 @@
             return;
         }
 
-        // 博主内容区按钮逻辑
-        const userNames = document.querySelectorAll('[class*="head_name"], .woo-box-flex .woo-box-item:first-child a');
+        const feedItems = document.querySelectorAll('.Feed_body_3R0rO');
 
-        userNames.forEach(userNameElement => {
-            // 检查是否已经添加过按钮
-            if (userNameElement.querySelector('.weibo-block-btn')) {
-                return;
-            }
+        feedItems.forEach((feedItem) => {
+            if (feedItem.querySelector('.weibo-block-btn')) return;
 
-            // 尝试多种方式获取用户ID和名称
-            let userId = null;
+            // 直接找到用户名链接
+            const userLink = feedItem.querySelector('a.head_name_24eEB[usercard]');
+            if (!userLink) return;
+
+            const userId = userLink.getAttribute('usercard');
             let userName = '未知用户';
-
-            // 方式1: 从usercard属性获取
-            const userLink = userNameElement.closest('a[usercard]') || userNameElement.querySelector('a[usercard]');
-            if (userLink) {
-                userId = userLink.getAttribute('usercard');
-                const userSpan = userLink.querySelector('span');
-                if (userSpan) {
-                    userName = userSpan.getAttribute('title') || userSpan.textContent || userName;
-                }
+            const userSpan = userLink.querySelector('span');
+            if (userSpan) {
+                userName = userSpan.getAttribute('title') || userSpan.textContent || userName;
             }
 
-            // 方式2: 从href中提取ID
-            if (!userId && userLink) {
-                const href = userLink.getAttribute('href') || '';
-                const idMatch = href.match(/\/(\d+)$/);
-                if (idMatch) {
-                    userId = idMatch[1];
-                }
-            }
-
-            // 方式3: 从父元素中查找
-            if (!userId) {
-                const parent = userNameElement.closest('[usercard]');
-                if (parent) {
-                    userId = parent.getAttribute('usercard');
-                }
-            }
-
-            if (!userId) {
-                console.log('❌ 未找到用户ID:', userNameElement);
-                return;
-            }
+            if (!userId) return;
 
             // 创建屏蔽按钮
             const blockBtn = document.createElement('button');
             blockBtn.className = 'weibo-block-btn';
             blockBtn.textContent = '屏蔽';
             blockBtn.title = `屏蔽用户 ${userName} (ID: ${userId})`;
+            blockBtn.style.cssText = `
+                padding: 2px 8px;
+                border: 1px solid #d0d0d0;
+                border-radius: 3px;
+                background: transparent;
+                color: #8590a6;
+                font-size: 12px;
+                cursor: pointer;
+                transition: all 0.2s;
+                margin-left: 8px;
+                vertical-align: middle;
+            `;
+
+            // 悬停效果
+            blockBtn.addEventListener('mouseenter', () => {
+                blockBtn.style.borderColor = '#f1403c';
+                blockBtn.style.color = '#f1403c';
+                blockBtn.style.background = 'rgba(241, 64, 60, 0.05)';
+            });
+
+            blockBtn.addEventListener('mouseleave', () => {
+                blockBtn.style.borderColor = '#d0d0d0';
+                blockBtn.style.color = '#8590a6';
+                blockBtn.style.background = 'transparent';
+            });
 
             // 按钮点击事件
             blockBtn.addEventListener('click', function (e) {
                 e.preventDefault();
                 e.stopPropagation();
+                e.stopImmediatePropagation();
 
                 // 添加用户ID到屏蔽列表
                 if (!blockedIds.includes(userId)) {
@@ -1041,16 +1040,8 @@
                 }
             });
 
-            // 将按钮添加到用户名称后面
-            // 确保元素有合适的布局
-            if (userNameElement.style.display === 'inline') {
-                userNameElement.style.display = 'inline-flex';
-                userNameElement.style.alignItems = 'center';
-                userNameElement.style.gap = '5px';
-            }
-            userNameElement.appendChild(blockBtn);
-
-            console.log(`✅ 已添加屏蔽按钮: ${userName} (${userId})`);
+            // 直接将按钮插入到用户名链接的后面
+            userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
         });
 
         // 为评论区添加屏蔽按钮
@@ -1067,17 +1058,14 @@
             const commentItems = feed.querySelectorAll('.wbpro-list');
 
             commentItems.forEach(item => {
-                // 查找评论中的用户链接（在 .text 内的第一个链接）
-                const textDiv = item.querySelector('.text');
-                if (!textDiv) return;
-
-                const userLink = textDiv.querySelector('a[usercard]');
-                if (!userLink) return;
-
                 // 检查是否已经添加过按钮
-                if (userLink.querySelector('.weibo-block-btn')) {
+                if (item.querySelector('.weibo-block-btn')) {
                     return;
                 }
+
+                // 查找评论中的用户链接
+                const userLink = item.querySelector('a[usercard]');
+                if (!userLink) return;
 
                 const userId = userLink.getAttribute('usercard');
                 if (!userId) return;
@@ -1090,11 +1078,37 @@
                 blockBtn.className = 'weibo-block-btn weibo-block-btn-comment';
                 blockBtn.textContent = '屏蔽';
                 blockBtn.title = `屏蔽用户 ${userName} (ID: ${userId})`;
+                blockBtn.style.cssText = `
+                    padding: 1px 6px;
+                    border: 1px solid #d0d0d0;
+                    border-radius: 3px;
+                    background: transparent;
+                    color: #8590a6;
+                    font-size: 11px;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                    flex-shrink: 0;
+                    margin-left: 5px;
+                `;
+
+                // 悬停效果
+                blockBtn.addEventListener('mouseenter', () => {
+                    blockBtn.style.borderColor = '#f1403c';
+                    blockBtn.style.color = '#f1403c';
+                    blockBtn.style.background = 'rgba(241, 64, 60, 0.05)';
+                });
+
+                blockBtn.addEventListener('mouseleave', () => {
+                    blockBtn.style.borderColor = '#d0d0d0';
+                    blockBtn.style.color = '#8590a6';
+                    blockBtn.style.background = 'transparent';
+                });
 
                 // 按钮点击事件
                 blockBtn.addEventListener('click', function (e) {
                     e.preventDefault();
                     e.stopPropagation();
+                    e.stopImmediatePropagation();
 
                     // 添加用户ID到屏蔽列表
                     if (!blockedIds.includes(userId)) {
@@ -1116,17 +1130,24 @@
                     }
                 });
 
-                // 调整用户链接样式以容纳按钮
-                if (window.getComputedStyle(userLink).display === 'inline') {
-                    userLink.style.display = 'inline-flex';
-                    userLink.style.alignItems = 'center';
-                    userLink.style.gap = '5px';
-                }
+                // 创建评论区按钮容器
+                const commentButtonContainer = document.createElement('div');
+                commentButtonContainer.className = 'weibo-block-button-container';
+                commentButtonContainer.style.cssText = `
+                    display: inline-block;
+                    margin-left: 5px;
+                    vertical-align: middle;
+                `;
 
-                // 将按钮添加到用户链接后面
-                userLink.appendChild(blockBtn);
+                commentButtonContainer.appendChild(blockBtn);
 
-                console.log(`✅ 已添加评论区屏蔽按钮: ${userName} (${userId})`);
+                // 阻止容器的点击事件冒泡
+                commentButtonContainer.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                });
+
+                // 将按钮容器添加到用户链接后面
+                userLink.parentNode.insertBefore(commentButtonContainer, userLink.nextSibling);
             });
         });
     }
