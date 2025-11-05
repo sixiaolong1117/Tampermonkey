@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.11
+// @version      0.11-gender-beta
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -40,8 +40,19 @@
     // 为所有存储键添加脚本专属前缀
     const STORAGE_PREFIX = 'sixiaolong1117_weibo_';
     const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
+
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
+
+    const DEFAULT_GENDER_DISPLAY = false;  // 默认不显示性别标注
+    const DEFAULT_GENDER_BLOCK_ENABLED = false;  // 默认不启用性别屏蔽
+    const DEFAULT_BLOCKED_GENDERS = [];  // 默认不屏蔽任何性别 ['m', 'f']
+
+    // 性别相关存储键
+    const GENDER_DISPLAY_KEY = STORAGE_PREFIX + 'gender_display';
+    const GENDER_BLOCK_ENABLED_KEY = STORAGE_PREFIX + 'gender_block_enabled';
+    const BLOCKED_GENDERS_KEY = STORAGE_PREFIX + 'blocked_genders';
+    const GENDER_CACHE_KEY = STORAGE_PREFIX + 'gender_cache';
 
     // 提取 @version
     const SCRIPT_VERSION = GM_info.script.version || 'unknown';
@@ -58,6 +69,12 @@
     let keywordManager = null;
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
+
+    // 初始化性别相关变量
+    let genderDisplay = GM_getValue(GENDER_DISPLAY_KEY, DEFAULT_GENDER_DISPLAY);
+    let genderBlockEnabled = GM_getValue(GENDER_BLOCK_ENABLED_KEY, DEFAULT_GENDER_BLOCK_ENABLED);
+    let blockedGenders = GM_getValue(BLOCKED_GENDERS_KEY, DEFAULT_BLOCKED_GENDERS);
+    let genderCache = GM_getValue(GENDER_CACHE_KEY, {});
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -77,9 +94,41 @@
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('显示设置', showDisplaySettings);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
+    GM_registerMenuCommand('性别设置', showGenderSettings);
 
     // 深浅色模式样式
     const styles = `
+        .weibo-gender-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-left: 5px;
+            font-weight: 500;
+            vertical-align: middle;
+        }
+        .weibo-gender-male {
+            background: rgba(135, 206, 250, 0.3);
+            color: #1e90ff;
+            border: 1px solid rgba(30, 144, 255, 0.3);
+        }
+        .weibo-gender-female {
+            background: rgba(255, 182, 193, 0.3);
+            color: #ff1493;
+            border: 1px solid rgba(255, 20, 147, 0.3);
+        }
+        @media (prefers-color-scheme: dark) {
+            .weibo-gender-male {
+                background: rgba(135, 206, 250, 0.15);
+                color: #87ceeb;
+                border-color: rgba(135, 206, 250, 0.3);
+            }
+            .weibo-gender-female {
+                background: rgba(255, 182, 193, 0.15);
+                color: #ffb6c1;
+                border-color: rgba(255, 182, 193, 0.3);
+            }
+        }
         .custom-hidden-message {
             margin: 10px 0;
         }
@@ -325,6 +374,10 @@
 
     // 输出脚本信息
     function logScriptInfo() {
+        const genderBlockInfo = genderBlockEnabled
+            ? `已启用 (${blockedGenders.map(g => g === 'm' ? '男' : '女').join(', ') || '无'})`
+            : '未启用';
+
         console.log(
             `%c🐦 微博内容综合屏蔽脚本已启动\n` +
             `🏷️ 屏蔽标签: ${HIDDEN_TAGS.join(', ')}\n` +
@@ -333,6 +386,8 @@
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
+            `👫 性别标注: ${genderDisplay ? '已启用' : '未启用'}\n` +
+            `🚫 性别屏蔽: ${genderBlockInfo}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
             `⌨️  按 F9 添加选中文本到来源屏蔽词\n` +
             `⏰ 启动时间: ${new Date().toLocaleString()}`,
@@ -1204,7 +1259,7 @@
     }
 
     // 修改用户ID屏蔽逻辑
-    function hideContent() {
+    async function hideContent() {
         // 先添加屏蔽按钮
         addBlockButtons();
         // 方法1: 通过推荐标签屏蔽
@@ -1219,6 +1274,11 @@
         hideByTimeFilter();
         // 方法6: 屏蔽评论区用户
         hideCommentsByUserId();
+
+        // 新增：添加性别标注和性别屏蔽
+        await addGenderTags();
+        await hideByGender();
+
         // 强制更新页面布局
         forceLayoutUpdate();
     }
@@ -1728,15 +1788,462 @@
         }
     }
 
+    // 获取用户性别
+    async function getUserGender(uid) {
+        const CACHE_DAYS = 30;           // 成功缓存 30 天
+        const FAIL_CACHE_HOURS = 1;      // 失败缓存 1 小时
+        const CACHE_KEY = GENDER_CACHE_KEY;
+
+        // 检查缓存
+        if (genderCache[uid]) {
+            const cached = genderCache[uid];
+            const now = Date.now();
+
+            // 成功缓存：30天
+            if (cached.gender !== 'unknown' && now - cached.timestamp < CACHE_DAYS * 24 * 60 * 60 * 1000) {
+                const genderText = cached.gender === 'm' ? '男性' : '女性';
+                console.log(`%c[性别缓存命中] UID: ${uid} → ${genderText}`, 'color: #4CAF50; font-weight: bold;');
+                return cached.gender;
+            }
+
+            // 失败缓存：1小时
+            if (cached.failed && now - cached.timestamp < FAIL_CACHE_HOURS * 60 * 60 * 1000) {
+                console.log(`%c[性别失败缓存] UID: ${uid} → 跳过请求`, 'color: #FF9800;');
+                return 'unknown';
+            }
+
+            // 缓存过期，需重新请求
+            console.log(`%c[性别缓存过期] UID: ${uid} → 重新请求`, 'color: #FFC107;');
+        }
+
+        console.log(`%c[性别API请求] 正在获取 UID: ${uid}`, 'color: #2196F3;');
+
+        try {
+            const response = await new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: `https://m.weibo.cn/api/container/getIndex?uid=${uid}&containerid=100505${uid}`,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15',
+                        'Referer': 'https://m.weibo.cn/',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    onload: resolve,
+                    onerror: reject,
+                    ontimeout: reject,
+                    timeout: 10000
+                });
+            });
+
+            let data;
+            try {
+                data = JSON.parse(response.responseText);
+            } catch (e) {
+                throw new Error('JSON 解析失败');
+            }
+
+            // 特殊处理：触发验证码（ok: -100）
+            if (data.ok === -100 || data.ok == null) {
+                throw new Error('触发验证码 (ok: -100)');
+            }
+
+            const gender = data?.data?.userInfo?.gender || 'unknown';
+
+            if (gender === 'm' || gender === 'f') {
+                const genderText = gender === 'm' ? '男性' : '女性';
+                console.log(`%c[性别API成功] UID: ${uid} → ${genderText}`, 'color: #4CAF50; font-weight: bold;');
+
+                // 成功：缓存 30 天
+                genderCache[uid] = {
+                    gender: gender,
+                    timestamp: Date.now()
+                };
+            } else {
+                console.log(`%c[性别API成功但无数据] UID: ${uid} → 未知`, 'color: #FF9800;');
+
+                // 无性别也缓存，减少请求
+                genderCache[uid] = {
+                    gender: 'unknown',
+                    timestamp: Date.now()
+                };
+            }
+
+            GM_setValue(CACHE_KEY, genderCache);
+            return gender;
+
+        } catch (error) {
+            const errMsg = error.message || error;
+
+            // 风控特别提示
+            if (errMsg.includes('-100') || errMsg.includes('验证码')) {
+                console.warn(`%c[性别风控拦截] UID: ${uid} → 触发验证码，1小时内不再重试`, 'color: #F44336; font-weight: bold;');
+            } else {
+                console.warn(`%c[性别API失败] UID: ${uid} → ${errMsg}`, 'color: #F44336;');
+            }
+
+            // 失败：缓存 1 小时，防止刷接口
+            genderCache[uid] = {
+                gender: 'unknown',
+                timestamp: Date.now(),
+                failed: true
+            };
+            GM_setValue(CACHE_KEY, genderCache);
+            return 'unknown';
+        }
+    }
+
+    // 添加性别标注
+    async function addGenderTags() {
+        if (!genderDisplay) {
+            console.log('%c[性别标注] 已禁用显示', 'color: #9E9E9E;');
+            return;
+        }
+
+        const feedItems = document.querySelectorAll('.Feed_body_3R0rO');
+        let processed = 0, added = 0;
+
+        for (const feedItem of feedItems) {
+            const userLink = feedItem.querySelector('a.head_name_24eEB[usercard]');
+            if (!userLink) continue;
+
+            const nameContainer = userLink.parentNode;
+            if (!nameContainer || nameContainer.querySelector('.weibo-gender-tag')) continue;
+
+            if (userLink.dataset.genderProcessing === 'true') continue;
+            userLink.dataset.genderProcessing = 'true';
+
+            const userId = userLink.getAttribute('usercard');
+            if (!userId) {
+                userLink.dataset.genderProcessing = 'false';
+                continue;
+            }
+
+            processed++;
+            const gender = await getUserGender(userId);
+
+            if (nameContainer.querySelector('.weibo-gender-tag')) {
+                userLink.dataset.genderProcessing = 'false';
+                continue;
+            }
+
+            if (gender === 'm' || gender === 'f') {
+                const genderTag = document.createElement('span');
+                genderTag.className = `weibo-gender-tag weibo-gender-${gender === 'm' ? 'male' : 'female'}`;
+                genderTag.textContent = gender === 'm' ? '♂' : '♀';
+                genderTag.title = gender === 'm' ? '男性用户' : '女性用户';
+
+                const blockBtn = nameContainer.querySelector('.weibo-block-btn');
+                if (blockBtn) {
+                    nameContainer.insertBefore(genderTag, blockBtn);
+                } else {
+                    nameContainer.insertBefore(genderTag, userLink.nextSibling);
+                }
+                added++;
+            } else if (gender === 'unknown') {
+                console.log(`%c[性别标注跳过] UID: ${userId} → 无有效性别数据`, 'color: #FF9800;');
+            }
+
+            userLink.dataset.genderProcessing = 'false';
+        }
+
+        // 批量完成日志
+        if (processed > 0) {
+            console.log(
+                `%c[性别标注完成] 本轮处理 ${processed} 人，成功添加 ${added} 个标签`,
+                'background: #E8F5E9; color: #2E7D32; padding: 2px 6px; border-radius: 4px; font-weight: bold;'
+            );
+        }
+
+        await addCommentGenderTags();
+    }
+
+    // 为评论区添加性别标注
+    async function addCommentGenderTags() {
+        if (!genderDisplay) return;
+
+        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+        for (const feed of commentFeeds) {
+            const commentItems = feed.querySelectorAll('.wbpro-list');
+            for (const item of commentItems) {
+                const userLink = item.querySelector('a[usercard]');
+                if (!userLink) continue;
+
+                const nameContainer = userLink.parentNode;
+                if (!nameContainer) continue;
+
+                if (nameContainer.querySelector('.weibo-gender-tag')) continue;
+
+                if (userLink.dataset.genderProcessing === 'true') continue;
+                userLink.dataset.genderProcessing = 'true';
+
+                const userId = userLink.getAttribute('usercard');
+                if (!userId) {
+                    userLink.dataset.genderProcessing = 'false';
+                    continue;
+                }
+
+                const gender = await getUserGender(userId);
+
+                if (nameContainer.querySelector('.weibo-gender-tag')) {
+                    userLink.dataset.genderProcessing = 'false';
+                    continue;
+                }
+
+                if (gender === 'm' || gender === 'f') {
+                    const genderTag = document.createElement('span');
+                    genderTag.className = `weibo-gender-tag weibo-gender-${gender === 'm' ? 'male' : 'female'}`;
+                    genderTag.textContent = gender === 'm' ? '♂' : '♀';
+                    genderTag.title = gender === 'm' ? '男性用户' : '女性用户';
+                    genderTag.style.fontSize = '10px';
+                    genderTag.style.padding = '1px 6px';
+
+                    const blockBtn = nameContainer.querySelector('.weibo-block-btn-comment');
+                    if (blockBtn && blockBtn.parentNode === nameContainer) {
+                        nameContainer.insertBefore(genderTag, blockBtn);
+                    } else {
+                        nameContainer.insertBefore(genderTag, userLink.nextSibling);
+                    }
+                }
+
+                userLink.dataset.genderProcessing = 'false';
+            }
+        }
+    }
+
+    // 根据性别屏蔽
+    async function hideByGender() {
+        if (!genderBlockEnabled || blockedGenders.length === 0) return;
+
+        const feedItems = document.querySelectorAll('.Feed_body_3R0rO');
+
+        for (const feedItem of feedItems) {
+            if (feedItem.classList.contains('custom-hidden')) continue;
+
+            const userLink = feedItem.querySelector('a.head_name_24eEB[usercard]');
+            if (!userLink) continue;
+
+            const userId = userLink.getAttribute('usercard');
+            if (!userId) continue;
+
+            const gender = await getUserGender(userId);
+
+            if (blockedGenders.includes(gender)) {
+                feedItem.classList.add('custom-hidden');
+
+                let userName = '未知用户';
+                const userSpan = userLink.querySelector('span');
+                if (userSpan) {
+                    userName = userSpan.getAttribute('title') || userSpan.textContent || userName;
+                }
+
+                const genderText = gender === 'm' ? '男性' : '女性';
+
+                const parent = feedItem.parentElement;
+                Array.from(parent.children).forEach(child => {
+                    if (!child.classList.contains('custom-hidden-message')) {
+                        child.style.display = 'none';
+                    }
+                });
+
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = `
+                    <div class="message-content">
+                        已隐藏${genderText}用户: ${userName}
+                    </div>
+                `;
+                    parent.appendChild(message);
+                } else {
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'custom-hidden-message minimal-placeholder';
+                    placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                    parent.appendChild(placeholder);
+                }
+
+                logHiddenContent('性别屏蔽', genderText, feedItem, `屏蔽${genderText}用户: ${userName}`);
+            }
+        }
+
+        // 屏蔽评论区的性别用户
+        await hideCommentsByGender();
+    }
+
+    // 屏蔽评论区的性别用户
+    async function hideCommentsByGender() {
+        if (!genderBlockEnabled || blockedGenders.length === 0) return;
+
+        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+
+        for (const feed of commentFeeds) {
+            const commentItems = feed.querySelectorAll('.wbpro-list');
+
+            for (const item of commentItems) {
+                if (item.classList.contains('custom-hidden-comment')) continue;
+
+                const userLink = item.querySelector('a[usercard]');
+                if (!userLink) continue;
+
+                const userId = userLink.getAttribute('usercard');
+                if (!userId) continue;
+
+                const gender = await getUserGender(userId);
+
+                if (blockedGenders.includes(gender)) {
+                    item.classList.add('custom-hidden-comment');
+
+                    let userName = userLink.textContent.trim() || '未知用户';
+                    const genderText = gender === 'm' ? '男性' : '女性';
+
+                    if (showPlaceholder) {
+                        Array.from(item.children).forEach(child => {
+                            child.style.display = 'none';
+                        });
+
+                        const message = document.createElement('div');
+                        message.className = 'custom-hidden-message';
+                        message.innerHTML = `
+                        <div class="message-content" style="padding: 8px; font-size: 12px;">
+                            已隐藏${genderText}用户评论: ${userName}
+                        </div>
+                    `;
+                        item.appendChild(message);
+                    } else {
+                        item.style.display = 'none';
+                    }
+
+                    logHiddenContent('评论区性别屏蔽', genderText, item, `屏蔽评论${genderText}用户: ${userName}`);
+                }
+            }
+        }
+    }
+
+    // 性别设置界面
+    function showGenderSettings() {
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        const settingsModal = document.createElement('div');
+        settingsModal.className = 'keyword-manager-modal';
+        settingsModal.innerHTML = `
+        <div class="keyword-manager">
+            <h3>性别相关设置</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; margin-bottom: 15px;">
+                    <input type="checkbox" id="gender-display" ${genderDisplay ? 'checked' : ''} style="margin-right: 8px;">
+                    显示用户性别标注
+                </label>
+                
+                <div style="border-top: 1px solid var(--border-color, #ddd); padding-top: 15px; margin-top: 15px;">
+                    <label style="display: flex; align-items: center; margin-bottom: 15px;">
+                        <input type="checkbox" id="gender-block-enabled" ${genderBlockEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        启用性别屏蔽功能
+                    </label>
+                    
+                    <div id="gender-block-options" style="margin-left: 26px; ${genderBlockEnabled ? '' : 'opacity: 0.5; pointer-events: none;'}">
+                        <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                            <input type="checkbox" id="block-male" ${blockedGenders.includes('m') ? 'checked' : ''} style="margin-right: 8px;">
+                            <span class="weibo-gender-tag weibo-gender-male" style="margin: 0 5px;">♂</span>
+                            屏蔽男性用户
+                        </label>
+                        <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                            <input type="checkbox" id="block-female" ${blockedGenders.includes('f') ? 'checked' : ''} style="margin-right: 8px;">
+                            <span class="weibo-gender-tag weibo-gender-female" style="margin: 0 5px;">♀</span>
+                            屏蔽女性用户
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div><strong>性别功能说明：</strong></div>
+                <div>• 性别标注：在用户名旁显示性别图标（男性♂蓝色，女性♀粉色）</div>
+                <div>• 性别屏蔽：可选择屏蔽特定性别的用户微博</div>
+                <div>• 性别信息通过微博API获取并缓存7天</div>
+                <div>• 首次加载可能需要一些时间获取性别信息</div>
+            </div>
+        </div>
+    `;
+
+        // 启用/禁用性别屏蔽选项
+        const genderBlockCheckbox = settingsModal.querySelector('#gender-block-enabled');
+        const genderBlockOptions = settingsModal.querySelector('#gender-block-options');
+
+        genderBlockCheckbox.addEventListener('change', function () {
+            if (this.checked) {
+                genderBlockOptions.style.opacity = '1';
+                genderBlockOptions.style.pointerEvents = 'auto';
+            } else {
+                genderBlockOptions.style.opacity = '0.5';
+                genderBlockOptions.style.pointerEvents = 'none';
+            }
+        });
+
+        // 保存按钮
+        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
+            const newGenderDisplay = settingsModal.querySelector('#gender-display').checked;
+            const newGenderBlockEnabled = settingsModal.querySelector('#gender-block-enabled').checked;
+            const blockMale = settingsModal.querySelector('#block-male').checked;
+            const blockFemale = settingsModal.querySelector('#block-female').checked;
+
+            genderDisplay = newGenderDisplay;
+            genderBlockEnabled = newGenderBlockEnabled;
+            blockedGenders = [];
+            if (blockMale) blockedGenders.push('m');
+            if (blockFemale) blockedGenders.push('f');
+
+            GM_setValue(GENDER_DISPLAY_KEY, genderDisplay);
+            GM_setValue(GENDER_BLOCK_ENABLED_KEY, genderBlockEnabled);
+            GM_setValue(BLOCKED_GENDERS_KEY, blockedGenders);
+
+            overlay.remove();
+            settingsModal.remove();
+
+            showNotification('性别设置已保存');
+            location.reload();
+        });
+
+        // 关闭按钮
+        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            settingsModal.remove();
+        });
+
+        // 点击遮罩层关闭
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                settingsModal.remove();
+            }
+        });
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(settingsModal);
+    }
+
     // 使用防抖避免频繁执行
     let timeoutId;
-    function debouncedHide() {
+    let isHiding = false;  // 添加执行状态标记
+    async function debouncedHide() {
         clearTimeout(timeoutId);
-        timeoutId = setTimeout(hideContent, 100);
+        timeoutId = setTimeout(async () => {
+            // 如果正在执行，跳过本次调用
+            if (isHiding) return;
+
+            isHiding = true;
+            try {
+                await hideContent();
+            } finally {
+                isHiding = false;
+            }
+        }, 300);  // 增加延迟时间到300ms，减少频繁调用
     }
 
     // 初始化
-    function init() {
+    async function init() {
         // 初始化时进行全局类型检查
         keywords = ensureArray(keywords, DEFAULT_KEYWORDS);
         blockedIds = ensureArray(blockedIds, DEFAULT_BLOCKED_IDS);
@@ -1756,19 +2263,21 @@
         // 页面加载时执行一次WebDAV同步检查
         if (webdavConfig.enabled) {
             console.log('🔗 检查WebDAV同步...');
-            syncFromWebDAV().then(synced => {
+            syncFromWebDAV().then(async synced => {
                 if (synced) {
                     // 如果同步了新的数据，重新执行屏蔽
-                    hideContent();
+                    await hideContent();
                 }
             });
         }
 
         // 页面加载时执行一次
-        hideContent();
+        await hideContent();
 
         // 监听DOM变化（使用防抖）
-        const observer = new MutationObserver(debouncedHide);
+        const observer = new MutationObserver(() => {
+            debouncedHide();
+        });
         observer.observe(document.body, {
             childList: true,
             subtree: true
