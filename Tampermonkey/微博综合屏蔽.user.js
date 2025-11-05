@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.11
+// @version      0.12
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -428,194 +428,241 @@
         document.body.appendChild(configModal);
     }
 
-    // WebDAV同步函数
-    function syncToWebDAV(reason = '手动同步') {
-        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
-            console.log('❌ 请先在脚本设置中配置 WebDAV 信息！');
+    // =============== WebDAV 相关逻辑 START ===============
+
+    // 版本比较
+    function compareVersion(a, b) {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const na = pa[i] || 0, nb = pb[i] || 0;
+            if (na > nb) return 1;
+            if (na < nb) return -1;
+        }
+        return 0;
+    }
+
+    // WebDAV URL 构建
+    function getWebDAVUrls() {
+        let base = webdavConfig.url;
+        if (!base.endsWith('/')) base += '/';
+        const folder = base + 'WeiboGeneralBlock/';
+        const file = folder + 'weibo_blocklist.json';
+        const auth = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
+        return { base, folder, file, auth };
+    }
+
+    // GM_xmlhttpRequest 封装
+    function webdavRequest({ method, url, data, headers = {}, responseType }, callback) {
+        GM_xmlhttpRequest({
+            method,
+            url,
+            data,
+            headers: { 'Authorization': headers.auth || getWebDAVUrls().auth, ...headers },
+            responseType: responseType || 'text',
+            onload: res => callback(res),
+            onerror: () => callback({ status: 0, responseText: '' })
+        });
+    }
+
+    // lastSync 更新
+    function updateLastSync(timestamp) {
+        webdavConfig.lastSync = timestamp;
+        GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
+    }
+
+    // 配置对象构造
+    function createConfigObject(base = {}, reason = '手动同步') {
+        return {
+            ...base,
+            keywords: keywords,
+            blockedIds: blockedIds,
+            sourceKeywords: sourceKeywords,
+            timeFilterDays: timeFilterDays,
+            lastModified: Date.now(),
+            reason,
+            timestamp: new Date().toISOString(),
+            _script_version: SCRIPT_VERSION
+        };
+    }
+
+    // 版本检查与自动升级
+    function checkAndUpgradeVersion(remoteData) {
+        if (!remoteData._script_version || remoteData._script_version === SCRIPT_VERSION) {
+            console.log(`✅ 云端配置版本匹配：v${SCRIPT_VERSION}`);
             return;
         }
 
-        // ✅ 自动补全 URL 末尾斜杠
-        let baseUrl = webdavConfig.url;
-        if (!baseUrl.endsWith('/')) baseUrl += '/';
-        const folderUrl = baseUrl + 'WeiboGeneralBlock/';
-        const fileUrl = folderUrl + 'weibo_blocklist.json';
-        const authHeader = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
+        const remoteVer = remoteData._script_version;
+        const cmp = compareVersion(remoteVer, SCRIPT_VERSION);
 
-        // Step 1: 检查目录
-        GM_xmlhttpRequest({
-            method: 'PROPFIND',
-            url: folderUrl,
-            headers: { 'Authorization': authHeader },
-            onload: function (res) {
-                if (res.status === 404) {
-                    createFolderAndUpload();
-                } else {
-                    readThenMergeAndUpload();
-                }
-            },
-            onerror: () => {
-                console.log('❌ 检查目录失败');
+        if (cmp > 0) {
+            const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+            showNotification(msg);
+            console.log(msg);
+        } else if (cmp < 0) {
+            console.log(`⬆️ 云端配置 v${remoteVer} 较旧，自动升级中...`);
+            if (!window._weibo_version_upgrading) {
+                window._weibo_version_upgrading = true;
+                setTimeout(() => {
+                    syncToWebDAV('自动版本升级')
+                        .then(() => {
+                            const msg = `✅ 云端配置已升级：v${remoteVer} → v${SCRIPT_VERSION}`;
+                            console.log(msg);
+                            showNotification(msg);
+                        })
+                        .catch(() => showNotification('❌ 自动升级失败'))
+                        .finally(() => window._weibo_version_upgrading = false);
+                }, 1500);
             }
-        });
-
-        // 创建目录
-        function createFolderAndUpload() {
-            GM_xmlhttpRequest({
-                method: 'MKCOL',
-                url: folderUrl,
-                headers: { 'Authorization': authHeader },
-                onload: () => readThenMergeAndUpload(),
-                onerror: () => console.log('❌ 创建目录失败')
-            });
-        }
-
-        // 核心：先 GET 远端 → 合并 → 再 PUT
-        function readThenMergeAndUpload() {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: fileUrl,
-                headers: { 'Authorization': authHeader },
-                onload: function (getRes) {
-                    let remoteData = {};
-                    if (getRes.status === 200) {
-                        try { remoteData = JSON.parse(getRes.responseText) || {}; } catch (e) { }
-                    } else if (getRes.status !== 404) {
-                        console.log('❌ 读取远端文件失败:', getRes.status);
-                    }
-
-                    // 合并：保留远端所有字段，只更新当前版本所识别的
-                    const mergedData = {
-                        ...remoteData,  // 保留所有字段
-                        keywords: keywords,
-                        blockedIds: blockedIds,
-                        sourceKeywords: sourceKeywords,
-                        timeFilterDays: timeFilterDays,
-                        lastModified: Date.now(),
-                        reason: reason,
-                        timestamp: new Date().toISOString(),
-                        _script_version: SCRIPT_VERSION  // 版本标记
-                    };
-
-                    // 上传合并后的数据
-                    GM_xmlhttpRequest({
-                        method: 'PUT',
-                        url: fileUrl,
-                        data: JSON.stringify(mergedData, null, 2),
-                        headers: {
-                            'Authorization': authHeader,
-                            'Content-Type': 'application/json; charset=utf-8'
-                        },
-                        onload: function (putRes) {
-                            if (putRes.status >= 200 && putRes.status < 300) {
-                                console.log('✅ WebDAV 增量同步成功');
-                                webdavConfig.lastSync = mergedData.lastModified;
-                                GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
-                            } else {
-                                console.log('❌ 上传失败:', putRes.status);
-                            }
-                        },
-                        onerror: () => console.log('❌ 上传请求错误')
-                    });
-                },
-                onerror: () => console.log('❌ 读取远端文件失败')
-            });
         }
     }
 
-
-    // 从WebDAV拉取数据
-    function syncFromWebDAV() {
-        if (!webdavConfig.enabled || !webdavConfig.url) {
-            return Promise.resolve(false);
+    // 合并
+    function mergeFields(data) {
+        let updated = false;
+        ['keywords', 'blockedIds', 'sourceKeywords'].forEach(key => {
+            if (Array.isArray(data[key])) {
+                window[key] = data[key];
+                GM_setValue(STORAGE_PREFIX + key.toLowerCase(), data[key]);
+                updated = true;
+            }
+        });
+        if (typeof data.timeFilterDays === 'number') {
+            timeFilterDays = data.timeFilterDays;
+            GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
+            updated = true;
         }
+        return updated;
+    }
 
-        let baseUrl = webdavConfig.url;
-        if (!baseUrl.endsWith('/')) baseUrl += '/';
-        const fileUrl = baseUrl + 'WeiboGeneralBlock/weibo_blocklist.json';
+    // 拉取同步（下载）
+    function syncFromWebDAV() {
+        if (!webdavConfig.enabled || !webdavConfig.url) return Promise.resolve(false);
 
-        return new Promise((resolve) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: fileUrl,
-                responseType: 'json',
-                headers: {
-                    'Authorization': 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password)
-                },
-                onload: function (response) {
-                    if (response.status === 200) {
-                        try {
-                            const remoteData = response.response || {};
+        const { file, auth } = getWebDAVUrls();
 
-                            // 只有远程时间戳更新才应用
-                            const localTimestamp = webdavConfig.lastSync || 0;
-                            const remoteTimestamp = remoteData.lastModified || 0;
-
-                            // 版本检查
-                            if (remoteData._script_version && remoteData._script_version !== SCRIPT_VERSION) {
-                                console.log(`☁️ 云端配置版本: ${remoteData._script_version}, 💻 本地脚本版本: ${SCRIPT_VERSION}`);
-                                showNotification(`🚨 云端配置来自 v${remoteData._script_version}，当前脚本 v${SCRIPT_VERSION}，建议升级脚本！`);
-                            }
-
-                            if (remoteTimestamp <= localTimestamp) {
-                                console.log('✅ 本地数据已是最新，无需同步');
-                                resolve(false);
-                                return;
-                            }
-
-                            // 增量合并
-                            let updated = false;
-
-                            if (Array.isArray(remoteData.keywords)) {
-                                keywords = remoteData.keywords;
-                                GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
-                                updated = true;
-                            }
-                            if (Array.isArray(remoteData.blockedIds)) {
-                                blockedIds = remoteData.blockedIds;
-                                GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
-                                updated = true;
-                            }
-                            if (Array.isArray(remoteData.sourceKeywords)) {
-                                sourceKeywords = remoteData.sourceKeywords;
-                                GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
-                                updated = true;
-                            }
-                            if (typeof remoteData.timeFilterDays === 'number') {
-                                timeFilterDays = remoteData.timeFilterDays;
-                                GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
-                                updated = true;
-                            }
-
-                            if (updated) {
-                                webdavConfig.lastSync = remoteTimestamp;
-                                GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
-                                console.log('✅ 从 WebDAV 增量同步成功');
-                                showNotification('✅ 已从云端同步最新数据');
-                                resolve(true);
-                            } else {
-                                console.log('➡️ 无有效字段更新，跳过同步');
-                                resolve(false);
-                            }
-                        } catch (e) {
-                            console.error('❌ 解析远程数据失败:', e);
-                            resolve(false);
-                        }
-                    } else if (response.status === 404) {
-                        console.log('⬆️ 远程文件不存在，上传本地数据初始化');
-                        syncToWebDAV('🔄 初始化同步').then(() => resolve(false));
+        return new Promise(resolve => {
+            webdavRequest({ method: 'GET', url: file, responseType: 'json' }, res => {
+                if (res.status !== 200) {
+                    if (res.status === 404) {
+                        console.log('🔄 文件不存在，初始化上传');
+                        syncToWebDAV('初始化同步').then(() => resolve(false));
                     } else {
-                        console.error('❌ 拉取失败:', response.status);
+                        console.error('❌ 拉取失败:', res.status);
                         resolve(false);
                     }
-                },
-                onerror: function (err) {
-                    console.error('❌ 网络错误:', err);
+                    return;
+                }
+
+                let data;
+                try { data = res.response || {}; } catch { data = {}; }
+
+                const localTS = webdavConfig.lastSync || 0;
+                const remoteTS = data.lastModified || 0;
+                const remoteVer = data._script_version;
+
+                // 1. 时间戳判断：是否需要下载
+                const shouldDownload = remoteTS > localTS;
+                // 2. 版本判断：是否需要上传（即使时间戳最新）
+                const shouldUpload = remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) < 0;
+
+                let finalResolved = false;
+
+                // === 情况1：远端时间更新 → 下载合并 ===
+                if (shouldDownload) {
+                    const updated = mergeFields(data);
+                    if (updated) {
+                        updateLastSync(remoteTS);
+                        const msg = '✅ 时间戳更新：已从云端同步数据';
+                        console.log(msg);
+                        showNotification(msg);
+                        checkAndUpgradeVersion(data); // 可能触发上传
+                        resolve(true);
+                        finalResolved = true;
+                    }
+                }
+
+                // === 情况2：远端版本落后 → 强制上传（即使时间戳最新）===
+                if (shouldUpload && !finalResolved) {
+                    console.log(`⬆️ 远端版本 v${remoteVer} 落后，强制升级`);
+                    syncToWebDAV('强制版本升级')
+                        .then(success => {
+                            if (success) {
+                                showNotification(`✅ 远端配置已强制升级至 v${SCRIPT_VERSION}`);
+                                // 更新 lastSync 为当前时间，防止重复触发
+                                updateLastSync(Date.now());
+                            }
+                            resolve(success);
+                        });
+                    return;
+                }
+
+                // === 情况3：两者都不需要 ===
+                if (!finalResolved) {
+                    console.log('✅ 本地已是最新，无需操作');
+                    // 仍触发版本检查（提示升级脚本）
+                    if (remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) > 0) {
+                        const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+                        showNotification(msg);
+                        console.log(msg);
+                    }
                     resolve(false);
                 }
             });
         });
     }
+
+    // 推送同步（上传）
+    function syncToWebDAV(reason = '手动同步') {
+        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
+            console.log('请配置 WebDAV');
+            return Promise.resolve();
+        }
+
+        const { folder, file, auth } = getWebDAVUrls();
+
+        return new Promise(resolve => {
+            // 确保目录
+            webdavRequest({ method: 'PROPFIND', url: folder }, res => {
+                if (res.status === 404) {
+                    webdavRequest({ method: 'MKCOL', url: folder }, () => proceed());
+                } else {
+                    proceed();
+                }
+            });
+
+            function proceed() {
+                // 读取远端
+                webdavRequest({ method: 'GET', url: file }, res => {
+                    let remote = {};
+                    if (res.status === 200) {
+                        try { remote = JSON.parse(res.responseText) || {}; } catch { }
+                    }
+
+                    // 合并 + 上传
+                    const data = createConfigObject(remote, reason);
+                    webdavRequest({
+                        method: 'PUT',
+                        url: file,
+                        data: JSON.stringify(data, null, 2),
+                        headers: { 'Content-Type': 'application/json; charset=utf-8', auth }
+                    }, putRes => {
+                        if (putRes.status >= 200 && putRes.status < 300) {
+                            updateLastSync(data.lastModified);
+                            console.log('上传成功');
+                            resolve(true);
+                        } else {
+                            console.log('上传失败:', putRes.status);
+                            resolve(false);
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // =============== WebDAV 相关逻辑 END ===============
 
     // 强类型检查辅助函数
     function ensureArray(value, fallback = []) {
@@ -1223,8 +1270,18 @@
         forceLayoutUpdate();
     }
 
+    // 判断当前页面是否为热搜页
+    function isHotWeiboPage() {
+        return location.pathname.startsWith('/hot/weibo/');
+    }
+
     // 通过时间过滤屏蔽
     function hideByTimeFilter() {
+        // 只在热搜页执行
+        if (!isHotWeiboPage()) {
+            return;
+        }
+
         const feedBodies = document.querySelectorAll('.Feed_body_3R0rO');
 
         feedBodies.forEach(feedBody => {
