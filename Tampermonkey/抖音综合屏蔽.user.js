@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.2
+// @version      0.3
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -1066,6 +1066,25 @@
                                 node.getAttribute('data-e2e') === 'feed-comment-icon') {
                                 shouldHideComments = true;
                             }
+
+                            // 检测空卡片
+                            if (node.classList && node.classList.contains('pAWPzs6W') ||
+                                node.querySelector && node.querySelector('.pAWPzs6W')) {
+                                setTimeout(() => {
+                                    enhancedCheckAndLoadLazyCards();
+                                    checkPageStateAndLoad(); // 检查整体状态
+                                }, 300);
+                            }
+
+                            // 检测新加载的内容卡片
+                            if (node.classList && node.classList.contains('discover-video-card-item') &&
+                                !node.classList.contains('pAWPzs6W')) {
+                                console.log('🎉 检测到新加载的视频卡片');
+                                // 短暂延迟后检查页面状态
+                                setTimeout(() => {
+                                    checkPageStateAndLoad();
+                                }, 200);
+                            }
                         }
                     });
                 }
@@ -1147,6 +1166,10 @@
                         debouncedCheckAds();
                     }
                     debouncedCheckJingxuan();
+
+                    // 滚动时检查状态
+                    scrollManager.lastScrollY = window.scrollY;
+                    checkPageStateAndLoad();
                 } else {
                     debouncedCheck();
                 }
@@ -1192,6 +1215,18 @@
                 }, 500);
             }
         }).observe(document, { subtree: true, childList: true });
+
+        setInterval(() => {
+            if (isJingxuanPage()) {
+                const emptyCards = document.querySelectorAll('.discover-video-card-item.pAWPzs6W');
+                const visibleCards = document.querySelectorAll('.discover-video-card-item:not([style*="display: none"]):not(.pAWPzs6W)');
+
+                if (emptyCards.length > 5 && visibleCards.length < 10) {
+                    console.log('⏰ 定时检查: 需要加载更多内容');
+                    checkPageStateAndLoad();
+                }
+            }
+        }, 10000);
     }
 
     // 检查是否在冷却期内
@@ -1317,7 +1352,7 @@
             }
 
             if (filterReason) {
-                if (smartRemoveCard(card, filterReason)) {
+                if (enhancedSmartRemoveCard(card, filterReason)) {
                     filteredCount++;
                     filterStats.total++;
 
@@ -1338,12 +1373,6 @@
                         timestamp: new Date().toLocaleTimeString(),
                         page: 'jingxuan'
                     });
-
-                    // 检查是否需要触发刷新
-                    const rect = card.getBoundingClientRect();
-                    if (rect.top < window.innerHeight && rect.bottom > 0) {
-                        needsRefresh = true;
-                    }
                 }
             }
         });
@@ -1351,17 +1380,19 @@
         if (filteredCount > 0) {
             console.log(`🎯 [精选页面] 成功过滤 ${filteredCount} 个视频卡片`);
             showNotification(`已过滤 ${filteredCount} 个精选视频`);
-
-            // 如果过滤了可见卡片，触发刷新
-            if (needsRefresh) {
-                console.log('🔄 过滤了可见卡片，触发内容刷新...');
-                setTimeout(() => {
-                    triggerScrollRefresh();
-                }, 300);
-            }
         } else {
             console.log('❌ [精选页面] 未匹配任何过滤条件');
         }
+
+        // 检查并触发未加载卡片的加载
+        setTimeout(() => {
+            enhancedCheckAndLoadLazyCards();
+
+            // 检查页面整体状态
+            setTimeout(() => {
+                checkPageStateAndLoad();
+            }, 500);
+        }, 300);
     }
 
     // 检测视频卡片是否为广告
@@ -2285,6 +2316,262 @@
                 }
             }
         });
+    }
+
+    // 智能移除卡片函数
+    function enhancedSmartRemoveCard(card, matchedKeyword) {
+        if (card.style.display === 'none') return false;
+
+        console.log(`🚫 [精选页面] 隐藏视频卡片，匹配关键词: ${matchedKeyword}`);
+
+        // 记录卡片信息
+        const rect = card.getBoundingClientRect();
+        const isInViewport = rect.top < window.innerHeight && rect.bottom > 0;
+        const isEmptyCard = card.classList.contains('pAWPzs6W');
+        const cardIndex = Array.from(document.querySelectorAll('.discover-video-card-item')).indexOf(card);
+
+        // 隐藏卡片
+        card.style.display = 'none';
+        card.classList.add('douyin-filtered-card');
+        card.setAttribute('data-filtered-keyword', matchedKeyword);
+
+        // 延迟处理加载逻辑，避免过于密集
+        setTimeout(() => {
+            // 检查页面状态并决定如何触发加载
+            const visibleCards = document.querySelectorAll('.discover-video-card-item:not([style*="display: none"]):not(.pAWPzs6W)').length;
+
+            if (visibleCards < 6) {
+                // 可见卡片太少，需要主动加载更多内容
+                console.log(`📉 可见卡片仅剩${visibleCards}个，触发主动加载`);
+                simulateNaturalScroll();
+            } else if (isInViewport || isEmptyCard) {
+                // 正常情况下的懒加载触发
+                console.log('🔄 隐藏卡片在可视区域，触发懒加载');
+                checkPageStateAndLoad();
+            }
+
+            // 总是重新检查过滤，确保新内容也被处理
+            setTimeout(() => {
+                if (isJingxuanPage()) {
+                    checkAndFilterJingxuanCards();
+                }
+            }, 1000);
+        }, 300);
+
+        return true;
+    }
+
+    // 智能滚动加载管理器
+    let scrollManager = {
+        isProcessing: false,
+        lastScrollY: 0,
+        scrollCount: 0,
+        emptyCardCount: 0
+    };
+
+    // 模拟自然用户滚动行为
+    function simulateNaturalScroll() {
+        if (scrollManager.isProcessing) return;
+
+        scrollManager.isProcessing = true;
+        console.log('🔄 模拟自然滚动触发加载...');
+
+        const currentScroll = window.scrollY;
+        const viewportHeight = window.innerHeight;
+        const documentHeight = document.documentElement.scrollHeight;
+
+        // 计算滚动距离：视口高度的 50-80%
+        const scrollDistance = Math.floor(viewportHeight * (0.5 + Math.random() * 0.3));
+
+        // 方法1: 平滑向下滚动
+        window.scrollTo({
+            top: currentScroll + scrollDistance,
+            behavior: 'smooth'
+        });
+
+        // 方法2: 短暂延迟后滚回原位置（模拟浏览行为）
+        setTimeout(() => {
+            window.scrollTo({
+                top: currentScroll,
+                behavior: 'smooth'
+            });
+
+            // 方法3: 触发一系列事件
+            triggerLoadingEvents();
+
+            scrollManager.isProcessing = false;
+            scrollManager.scrollCount++;
+
+            console.log(`✅ 第${scrollManager.scrollCount}次滚动模拟完成`);
+
+        }, 800 + Math.random() * 400); // 随机延迟增加自然感
+    }
+
+    // 触发加载事件序列
+    function triggerLoadingEvents() {
+        // 1. 触发滚动事件
+        const scrollEvent = new Event('scroll', {
+            bubbles: true,
+            cancelable: true
+        });
+        window.dispatchEvent(scrollEvent);
+
+        // 2. 触发resize事件
+        setTimeout(() => {
+            const resizeEvent = new Event('resize', {
+                bubbles: true,
+                cancelable: true
+            });
+            window.dispatchEvent(resizeEvent);
+
+            // 3. 触发触摸事件
+            const touchMoveEvent = new TouchEvent('touchmove', {
+                bubbles: true,
+                cancelable: true,
+                touches: [new Touch({ identifier: 1, target: document.body, clientX: 100, clientY: 200 })],
+                changedTouches: [new Touch({ identifier: 1, target: document.body, clientX: 100, clientY: 250 })]
+            });
+            document.dispatchEvent(touchMoveEvent);
+
+            // 4. 触发鼠标滚轮事件
+            const wheelEvent = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                deltaY: 100
+            });
+            document.dispatchEvent(wheelEvent);
+
+        }, 100);
+
+        // 5. 触发Intersection Observer
+        triggerEnhancedIntersectionObservers();
+    }
+
+    // Intersection Observer触发
+    function triggerEnhancedIntersectionObservers() {
+        // 创建多个触发点
+        for (let i = 0; i < 3; i++) {
+            setTimeout(() => {
+                const triggerElement = document.createElement('div');
+                triggerElement.style.cssText = `
+                position: absolute;
+                top: ${window.scrollY + window.innerHeight - 100 + i * 10}px;
+                left: 0;
+                width: 1px;
+                height: 1px;
+                opacity: 0.001;
+                pointer-events: none;
+            `;
+                triggerElement.className = 'douyin-load-trigger';
+                document.body.appendChild(triggerElement);
+
+                // 微小变化触发IO
+                setTimeout(() => {
+                    triggerElement.style.height = '2px';
+                    setTimeout(() => {
+                        triggerElement.remove();
+                    }, 50);
+                }, 20);
+
+            }, i * 150);
+        }
+    }
+
+    // 检查页面状态并智能加载
+    function checkPageStateAndLoad() {
+        if (!isJingxuanPage()) return;
+
+        const visibleCards = document.querySelectorAll('.discover-video-card-item:not([style*="display: none"]):not(.pAWPzs6W)');
+        const emptyCards = document.querySelectorAll('.discover-video-card-item.pAWPzs6W');
+        const totalCards = document.querySelectorAll('.discover-video-card-item').length;
+
+        console.log(`📊 页面状态: 可见${visibleCards.length}个, 空${emptyCards.length}个, 总计${totalCards}个卡片`);
+
+        // 如果空卡片比例过高或可见卡片太少，触发加载
+        const emptyRatio = emptyCards.length / totalCards;
+        const needsMoreContent = visibleCards.length < 8 || emptyRatio > 0.6;
+
+        if (needsMoreContent && emptyCards.length > 0) {
+            console.log(`🚨 需要更多内容: 可见卡片${visibleCards.length}个, 空卡片比例${(emptyRatio * 100).toFixed(1)}%`);
+
+            if (scrollManager.scrollCount < 5) { // 限制最大尝试次数
+                setTimeout(() => {
+                    simulateNaturalScroll();
+
+                    // 额外触发一次懒加载检查
+                    setTimeout(() => {
+                        enhancedCheckAndLoadLazyCards();
+                    }, 1000);
+                }, 500);
+            } else {
+                console.log('⚠️ 已达到最大滚动尝试次数，暂停自动加载');
+            }
+        } else if (emptyCards.length > 0) {
+            // 正常情况下的懒加载触发
+            enhancedCheckAndLoadLazyCards();
+        }
+    }
+
+    // 懒加载检查
+    function enhancedCheckAndLoadLazyCards() {
+        const emptyCards = document.querySelectorAll('.discover-video-card-item.pAWPzs6W');
+        if (emptyCards.length === 0) return;
+
+        console.log(`📦 发现 ${emptyCards.length} 个未加载的视频卡片`);
+
+        // 分批处理空卡片
+        const batches = [];
+        for (let i = 0; i < emptyCards.length; i += 3) {
+            batches.push(Array.from(emptyCards).slice(i, i + 3));
+        }
+
+        batches.forEach((batch, batchIndex) => {
+            setTimeout(() => {
+                batch.forEach((card, cardIndex) => {
+                    setTimeout(() => {
+                        triggerCardLoad(card);
+                    }, cardIndex * 200);
+                });
+            }, batchIndex * 600);
+        });
+
+        // 记录空卡片数量用于状态判断
+        scrollManager.emptyCardCount = emptyCards.length;
+    }
+
+    // 卡片加载触发
+    function triggerCardLoad(card) {
+        if (!card.classList.contains('pAWPzs6W')) return; // 只处理空卡片
+
+        console.log('🔧 触发单个卡片加载');
+
+        // 方法1: 强制重排触发
+        const originalDisplay = card.style.display;
+        card.style.display = 'none';
+        void card.offsetHeight; // 触发重排
+        card.style.display = originalDisplay;
+
+        // 方法2: 属性变化触发
+        const originalClass = card.className;
+        card.className = originalClass + ' douyin-loading-trigger';
+        setTimeout(() => {
+            card.className = originalClass;
+        }, 100);
+
+        // 方法3: 事件触发
+        const events = ['mouseenter', 'focus', 'pointerover', 'touchstart'];
+        events.forEach(eventType => {
+            const event = new Event(eventType, { bubbles: true });
+            card.dispatchEvent(event);
+        });
+
+        // 方法4: 模拟可见性变化
+        const observer = new IntersectionObserver(() => { }, { threshold: 0.1 });
+        observer.observe(card);
+        setTimeout(() => {
+            observer.unobserve(card);
+            observer.disconnect();
+        }, 500);
     }
 
     // 防抖版本的广告移除函数
