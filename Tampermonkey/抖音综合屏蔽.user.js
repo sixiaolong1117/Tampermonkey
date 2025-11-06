@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.1
+// @version      0.2
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -80,6 +80,43 @@
 
     // 添加样式
     const styles = `
+        /* 右键菜单样式 */
+        .douyin-context-menu {
+            position: fixed;
+            background: var(--bg-color, #fff);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            padding: 8px 0;
+            z-index: 100001;
+            min-width: 160px;
+            border: 1px solid var(--border-color, #e0e0e0);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 14px;
+        }
+        .douyin-context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-color, #333);
+            transition: background-color 0.2s;
+        }
+        .douyin-context-menu-item:hover {
+            background: var(--btn-bg, #f5f5f5);
+        }
+        .douyin-context-menu-item.disabled {
+            color: var(--text-secondary, #999);
+            cursor: not-allowed;
+        }
+        .douyin-context-menu-item.disabled:hover {
+            background: transparent;
+        }
+        .douyin-context-menu-divider {
+            height: 1px;
+            background: var(--border-color, #e0e0e0);
+            margin: 4px 0;
+        }
         .douyin-keyword-manager-overlay {
             position: fixed;
             top: 0;
@@ -1066,6 +1103,8 @@
                 }, 500);
             }
         });
+
+        addContextMenuListeners();
 
         const waitForElement = setInterval(() => {
             const videoContainer = document.querySelector('[data-e2e="feed-active-video"]');
@@ -2060,6 +2099,192 @@
         cooldownUntil = 0;
         console.log('🔄 冷却时间已重置');
         showNotification('冷却时间已重置');
+    }
+
+    // 右键菜单功能
+    function createContextMenu(x, y, options) {
+        // 移除已存在的菜单
+        const existingMenu = document.querySelector('.douyin-context-menu');
+        if (existingMenu) {
+            existingMenu.remove();
+        }
+
+        const menu = document.createElement('div');
+        menu.className = 'douyin-context-menu';
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+
+        options.forEach((option, index) => {
+            if (option.type === 'divider') {
+                const divider = document.createElement('div');
+                divider.className = 'douyin-context-menu-divider';
+                menu.appendChild(divider);
+            } else {
+                const item = document.createElement('div');
+                item.className = `douyin-context-menu-item ${option.disabled ? 'disabled' : ''}`;
+                item.innerHTML = `
+                <span style="font-size: 16px;">${option.icon}</span>
+                <span>${option.text}</span>
+            `;
+
+                if (!option.disabled) {
+                    item.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        option.action();
+                        menu.remove();
+                    });
+                }
+
+                menu.appendChild(item);
+            }
+        });
+
+        document.body.appendChild(menu);
+
+        // 点击其他地方关闭菜单
+        const closeMenu = (e) => {
+            if (!menu.contains(e.target)) {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            }
+        };
+
+        setTimeout(() => {
+            document.addEventListener('click', closeMenu);
+        }, 100);
+
+        return menu;
+    }
+
+    // 获取视频卡片信息
+    function getVideoCardInfo(element) {
+        const card = element.closest('.discover-video-card-item');
+        if (!card) return null;
+
+        const authorElement = card.querySelector('.H0ZV35Qb .i1udsuGn');
+        const author = authorElement ? authorElement.textContent || authorElement.innerText : '';
+
+        const videoId = card.getAttribute('data-aweme-id') || '';
+
+        const titleElement = card.querySelector('.bWzvoR9D');
+        const title = titleElement ? titleElement.textContent || titleElement.innerText : '';
+
+        return {
+            card,
+            author,
+            videoId,
+            title,
+            element
+        };
+    }
+
+    // 屏蔽作者
+    function blockAuthor(author) {
+        if (!author || blockAuthors.includes(author)) return;
+
+        blockAuthors.push(author);
+        GM_setValue(STORAGE_PREFIX + 'block_authors', blockAuthors);
+
+        filterStats.authorsBlocked++;
+        showNotification(`已屏蔽作者: ${author}`);
+
+        // 立即应用屏蔽
+        if (isJingxuanPage()) {
+            const cards = document.querySelectorAll('.discover-video-card-item');
+            cards.forEach(card => {
+                const cardAuthor = card.querySelector('.H0ZV35Qb .i1udsuGn');
+                if (cardAuthor && (cardAuthor.textContent || cardAuthor.innerText) === author) {
+                    smartRemoveCard(card, `作者: ${author}`);
+                }
+            });
+        }
+    }
+
+    // 屏蔽视频
+    function blockVideo(videoId, title = '') {
+        if (!videoId || blockVideoIds.includes(videoId)) return;
+
+        blockVideoIds.push(videoId);
+        GM_setValue(STORAGE_PREFIX + 'block_video_ids', blockVideoIds);
+
+        filterStats.videoIdsBlocked++;
+        const displayTitle = title ? title.substring(0, 20) + (title.length > 20 ? '...' : '') : '视频';
+        showNotification(`已屏蔽视频: ${displayTitle}`);
+
+        // 立即应用屏蔽
+        if (isJingxuanPage()) {
+            const card = document.querySelector(`.discover-video-card-item[data-aweme-id="${videoId}"]`);
+            if (card) {
+                smartRemoveCard(card, `视频ID: ${videoId}`);
+            }
+        }
+    }
+
+    // 检查是否已屏蔽作者
+    function isAuthorBlocked(author) {
+        return blockAuthors.some(blockedAuthor =>
+            author.toLowerCase().includes(blockedAuthor.toLowerCase())
+        );
+    }
+
+    // 检查是否已屏蔽视频
+    function isVideoIdBlocked(videoId) {
+        return blockVideoIds.includes(videoId);
+    }
+
+    // 添加右键事件监听
+    function addContextMenuListeners() {
+        // 使用事件委托处理右键点击
+        document.addEventListener('contextmenu', (e) => {
+            // 检查是否点击在作者名称上
+            const authorElement = e.target.closest('.H0ZV35Qb .i1udsuGn');
+            // 检查是否点击在视频标题上
+            const titleElement = e.target.closest('.bWzvoR9D');
+
+            if (authorElement || titleElement) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const cardInfo = getVideoCardInfo(e.target);
+                if (!cardInfo) return;
+
+                const { author, videoId, title } = cardInfo;
+                const isAuthorAlreadyBlocked = isAuthorBlocked(author);
+                const isVideoAlreadyBlocked = isVideoIdBlocked(videoId);
+
+                const menuOptions = [];
+
+                // 作者相关选项
+                if (author) {
+                    menuOptions.push({
+                        icon: '👤',
+                        text: isAuthorAlreadyBlocked ? `已屏蔽作者: ${author}` : `屏蔽作者: ${author}`,
+                        action: () => blockAuthor(author),
+                        disabled: isAuthorAlreadyBlocked
+                    });
+                }
+
+                // 视频相关选项
+                if (videoId) {
+                    const displayTitle = title ? title.substring(0, 15) + (title.length > 15 ? '...' : '') : '视频';
+                    menuOptions.push({
+                        icon: '🎬',
+                        text: isVideoAlreadyBlocked ? `已屏蔽视频` : `屏蔽视频: ${displayTitle}`,
+                        action: () => blockVideo(videoId, title),
+                        disabled: isVideoAlreadyBlocked
+                    });
+                }
+
+                if (menuOptions.length > 0) {
+                    // 添加分隔符
+                    if (author && videoId) {
+                        menuOptions.splice(1, 0, { type: 'divider' });
+                    }
+
+                    createContextMenu(e.clientX, e.clientY, menuOptions);
+                }
+            }
+        });
     }
 
     // 防抖版本的广告移除函数
