@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -2276,6 +2276,7 @@
 
         // 立即应用屏蔽
         if (isJingxuanPage()) {
+            // 精选页：隐藏对应作者的卡片
             const cards = document.querySelectorAll('.discover-video-card-item');
             cards.forEach(card => {
                 const cardAuthor = card.querySelector('.H0ZV35Qb .i1udsuGn');
@@ -2283,6 +2284,18 @@
                     smartRemoveCard(card, `作者: ${author}`);
                 }
             });
+        } else if (window.location.href.includes('recommend=1')) {
+            // 推荐页：如果当前视频作者匹配，立即触发不感兴趣
+            const currentAuthorElement = document.querySelector('.account-name-text');
+            if (currentAuthorElement) {
+                const currentAuthor = currentAuthorElement.innerText || currentAuthorElement.textContent;
+                if (currentAuthor === author) {
+                    setTimeout(() => {
+                        triggerDisinterest();
+                        showNotification(`已屏蔽作者 ${author} 并跳过当前视频`);
+                    }, 300);
+                }
+            }
         }
     }
 
@@ -2320,57 +2333,135 @@
 
     // 添加右键事件监听
     function addContextMenuListeners() {
-        // 使用事件委托处理右键点击
-        document.addEventListener('contextmenu', (e) => {
+        // 方案1：在捕获阶段监听所有右键事件
+        document.addEventListener('contextmenu', function (e) {
+            // 检查是否点击在标签上 - 使用多重选择器确保匹配
+            let tagElement = null;
+
+            // 方法1：检查包含 # 的文本元素
+            let target = e.target;
+            while (target && target !== document) {
+                if (target.textContent && target.textContent.includes('#') &&
+                    target.textContent.trim().startsWith('#')) {
+                    tagElement = target;
+                    break;
+                }
+                target = target.parentElement;
+            }
+
+            // 方法2：检查特定的标签链接
+            if (!tagElement) {
+                tagElement = e.target.closest('a[href*="//www.douyin.com/search/"]');
+            }
+
+            // 方法3：检查标签类名
+            if (!tagElement) {
+                tagElement = e.target.closest('.SLdJu_MF');
+            }
+
             // 检查是否点击在作者名称上
+            const accountNameElement = e.target.closest('.account-name-text');
+
+            // 检查精选页元素
             const authorElement = e.target.closest('.H0ZV35Qb .i1udsuGn');
-            // 检查是否点击在视频标题上
             const titleElement = e.target.closest('.bWzvoR9D');
 
-            if (authorElement || titleElement) {
+            if (accountNameElement || tagElement || authorElement || titleElement) {
                 e.preventDefault();
                 e.stopPropagation();
 
-                const cardInfo = getVideoCardInfo(e.target);
-                if (!cardInfo) return;
-
-                const { author, videoId, title } = cardInfo;
-                const isAuthorAlreadyBlocked = isAuthorBlocked(author);
-                const isVideoAlreadyBlocked = isVideoIdBlocked(videoId);
-
                 const menuOptions = [];
 
-                // 作者相关选项
-                if (author) {
+                // 处理推荐页作者屏蔽
+                if (accountNameElement) {
+                    const author = accountNameElement.innerText || accountNameElement.textContent;
+                    const isAuthorAlreadyBlocked = isAuthorBlocked(author);
+
                     menuOptions.push({
                         icon: '👤',
                         text: isAuthorAlreadyBlocked ? `已屏蔽作者: ${author}` : `屏蔽作者: ${author}`,
-                        action: () => blockAuthor(author),
+                        action: () => {
+                            blockAuthor(author);
+                            setTimeout(() => {
+                                triggerDisinterest();
+                                showNotification(`已屏蔽作者 ${author} 并跳过当前视频`);
+                            }, 300);
+                        },
                         disabled: isAuthorAlreadyBlocked
                     });
                 }
 
-                // 视频相关选项
-                if (videoId) {
-                    const displayTitle = title ? title.substring(0, 15) + (title.length > 15 ? '...' : '') : '视频';
+                // 处理标签屏蔽
+                if (tagElement) {
+                    let tagText = tagElement.innerText || tagElement.textContent;
+                    tagText = tagText.trim();
+
+                    // 确保以 # 开头
+                    if (!tagText.startsWith('#')) {
+                        tagText = '#' + tagText;
+                    }
+
+                    const isTagAlreadyBlocked = isTextMatched(tagText);
+
                     menuOptions.push({
-                        icon: '🎬',
-                        text: isVideoAlreadyBlocked ? `已屏蔽视频` : `屏蔽视频: ${displayTitle}`,
-                        action: () => blockVideo(videoId, title),
-                        disabled: isVideoAlreadyBlocked
+                        icon: '🏷️',
+                        text: isTagAlreadyBlocked ? `已屏蔽标签: ${tagText}` : `屏蔽标签: ${tagText}`,
+                        action: () => {
+                            if (!keywords.includes(tagText)) {
+                                keywords.push(tagText);
+                                GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+                                showNotification(`已添加屏蔽标签: ${tagText}`);
+                            }
+
+                            setTimeout(() => {
+                                triggerDisinterest();
+                                showNotification(`已屏蔽标签 ${tagText} 并跳过当前视频`);
+                            }, 300);
+                        },
+                        disabled: isTagAlreadyBlocked
                     });
                 }
 
+                // 处理精选页元素（原有逻辑）
+                if (authorElement) {
+                    const cardInfo = getVideoCardInfo(e.target);
+                    if (cardInfo) {
+                        const { author, videoId, title } = cardInfo;
+                        const isAuthorAlreadyBlocked = isAuthorBlocked(author);
+
+                        menuOptions.push({
+                            icon: '👤',
+                            text: isAuthorAlreadyBlocked ? `已屏蔽作者: ${author}` : `屏蔽作者: ${author}`,
+                            action: () => blockAuthor(author),
+                            disabled: isAuthorAlreadyBlocked
+                        });
+                    }
+                }
+
+                if (titleElement) {
+                    const cardInfo = getVideoCardInfo(e.target);
+                    if (cardInfo) {
+                        const { author, videoId, title } = cardInfo;
+                        const isVideoAlreadyBlocked = isVideoIdBlocked(videoId);
+                        const displayTitle = title ? title.substring(0, 15) + (title.length > 15 ? '...' : '') : '视频';
+
+                        menuOptions.push({
+                            icon: '🎬',
+                            text: isVideoAlreadyBlocked ? `已屏蔽视频` : `屏蔽视频: ${displayTitle}`,
+                            action: () => blockVideo(videoId, title),
+                            disabled: isVideoAlreadyBlocked
+                        });
+                    }
+                }
+
                 if (menuOptions.length > 0) {
-                    // 添加分隔符
-                    if (author && videoId) {
+                    if (menuOptions.length > 1) {
                         menuOptions.splice(1, 0, { type: 'divider' });
                     }
-
                     createContextMenu(e.clientX, e.clientY, menuOptions);
                 }
             }
-        });
+        }, true); // 使用捕获阶段
     }
 
     // 智能移除卡片函数
@@ -2637,6 +2728,11 @@
     // 初始化
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', observeVideoChanges);
+
+        // 确保右键监听在页面加载后立即生效
+        setTimeout(() => {
+            addContextMenuListeners();
+        }, 1000);
     } else {
         observeVideoChanges();
     }
