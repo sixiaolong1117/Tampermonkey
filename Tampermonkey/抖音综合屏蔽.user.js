@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -845,15 +845,13 @@
 
     // 获取视频信息文本
     function getVideoInfoText() {
-        // 如果是推荐页，使用新的选择器
+        // 如果是推荐页，使用新的选择器，但不包含时间信息
         if (window.location.href.includes('recommend=1')) {
             const accountElement = document.querySelector('.account-name-text');
-            const timeElement = document.querySelector('.video-create-time .time');
             const titleElement = document.querySelector('.title[data-e2e="video-desc"]');
 
             let text = '';
             if (accountElement) text += accountElement.innerText || accountElement.textContent;
-            if (timeElement) text += ' ' + (timeElement.innerText || timeElement.textContent);
             if (titleElement) text += ' ' + (titleElement.innerText || titleElement.textContent);
 
             console.log('🎯 推荐页获取到的文本:', text);
@@ -1392,7 +1390,7 @@
                 filterReason = `作者: ${author}`;
                 console.log(`✅ [精选页面] 卡片 ${index} 匹配作者屏蔽: ${author}`);
             }
-            // 3. 检查时间过滤
+            // 3. 检查时间过滤（仅在精选页面生效）
             else if (shouldFilterByTime(publishTime)) {
                 filterReason = `发布时间: ${publishTime.toLocaleDateString()} (超过${timeFilter.days}天)`;
                 console.log(`✅ [精选页面] 卡片 ${index} 匹配时间过滤: ${publishTime.toLocaleDateString()}`);
@@ -1847,7 +1845,8 @@
 
     // 检查是否应该根据时间过滤
     function shouldFilterByTime(publishTime) {
-        if (!timeFilter.enabled || !publishTime) return false;
+        // 时间过滤只在精选页面生效
+        if (!isJingxuanPage() || !timeFilter.enabled || !publishTime) return false;
 
         const now = new Date();
         const timeDiff = now.getTime() - publishTime.getTime();
