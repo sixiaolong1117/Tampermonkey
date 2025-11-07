@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.3
+// @version      0.4
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -845,6 +845,22 @@
 
     // 获取视频信息文本
     function getVideoInfoText() {
+        // 如果是推荐页，使用新的选择器
+        if (window.location.href.includes('recommend=1')) {
+            const accountElement = document.querySelector('.account-name-text');
+            const timeElement = document.querySelector('.video-create-time .time');
+            const titleElement = document.querySelector('.title[data-e2e="video-desc"]');
+
+            let text = '';
+            if (accountElement) text += accountElement.innerText || accountElement.textContent;
+            if (timeElement) text += ' ' + (timeElement.innerText || timeElement.textContent);
+            if (titleElement) text += ' ' + (titleElement.innerText || titleElement.textContent);
+
+            console.log('🎯 推荐页获取到的文本:', text);
+            return text;
+        }
+
+        // 原有的普通页面逻辑
         const currentVideo = getCurrentVideoInfo();
         if (!currentVideo || !currentVideo.element) return '';
 
@@ -906,11 +922,16 @@
 
     // 检查并过滤
     function checkAndFilter() {
-        console.log('🔍 开始检查视频...');
+        console.log('🔍 开始检查视频...', '当前页面:', window.location.href);
 
         if (isInCooldown()) {
             console.log('⏸️ 冷却期中，跳过检查');
             return;
+        }
+
+        // 推荐页的特殊处理
+        if (window.location.href.includes('recommend=1')) {
+            console.log('🎯 检测到推荐页，使用推荐页过滤逻辑');
         }
 
         if (checkAndBlockLive()) {
@@ -1004,6 +1025,19 @@
 
     // 获取当前激活的视频信息
     function getCurrentVideoInfo() {
+        // 如果是推荐页
+        if (window.location.href.includes('recommend=1')) {
+            const videoContainer = document.querySelector('.xgplayer-playing, .xgplayer-pause');
+            if (videoContainer) {
+                return {
+                    element: videoContainer.closest('div[style*="width: 100%"]') || document.body,
+                    videoId: videoContainer.getAttribute('data-e2e-vid') || ''
+                };
+            }
+            return null;
+        }
+
+        // 原有的普通页面逻辑
         const activeVideo = document.querySelector('[data-e2e="feed-active-video"]');
         if (activeVideo) {
             const videoInfoWrap = activeVideo.querySelector('#video-info-wrap');
@@ -1052,6 +1086,18 @@
                                 node.querySelector && node.querySelector('[data-e2e-vid]')) {
                                 shouldCheck = true;
                                 shouldHideComments = true;
+                            }
+
+                            // 推荐页特定检测
+                            if (window.location.href.includes('recommend=1')) {
+                                if (node.classList && (
+                                    node.classList.contains('account') ||
+                                    node.classList.contains('video-create-time') ||
+                                    node.classList.contains('title')
+                                )) {
+                                    shouldCheck = true;
+                                    console.log('🎯 推荐页检测到用户信息或时间元素更新');
+                                }
                             }
 
                             // 精选页面视频卡片检测
@@ -1112,6 +1158,15 @@
 
             if (shouldHideComments && hideComments) {
                 setTimeout(hideCommentButtons, 200);
+            }
+
+            // 推荐页按普通视频流处理，不按精选页逻辑
+            if (shouldCheck && !isJingxuanPage()) {
+                debouncedCheck();
+            }
+
+            if (shouldCheckJingxuan && isJingxuanPage()) {
+                debouncedCheckJingxuan();
             }
 
             // 如果需要刷新且有新内容，触发刷新
