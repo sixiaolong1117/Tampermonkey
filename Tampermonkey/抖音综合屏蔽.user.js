@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音综合屏蔽
 // @namespace    http://tampermonkey.net/
-// @version      0.3
+// @version      0.7
 // @description  通过关键词过滤抖音视频，支持可视化管理
 // @license      MIT
 // @icon         https://douyin.com/favicon.ico
@@ -26,9 +26,100 @@
     const DEFAULT_BLOCK_ADS = true;
     const DEFAULT_BLOCK_AUTHORS = [];
     const DEFAULT_BLOCK_VIDEO_IDS = [];
+    const DEFAULT_DEBUG_MODE = false;
     const DEFAULT_TIME_FILTER = {
         enabled: false,
         days: 30
+    };
+    const stateManager = {
+        // 当前检测状态
+        current: {
+            videoId: null,
+            lastCheckedVideoId: null,
+            lastCheckTime: 0,
+            cooldownUntil: 0,
+            isProcessing: false
+        },
+
+        // 保存状态快照
+        snapshot: null,
+
+        // 重置所有状态
+        resetAll() {
+            console.log('🔄 重置所有检测状态');
+            this.current = {
+                videoId: null,
+                lastCheckedVideoId: null,
+                lastCheckTime: 0,
+                cooldownUntil: 0,
+                isProcessing: false
+            };
+            this.snapshot = null;
+
+            console.log('✅ 状态已重置:', this.current);
+        },
+
+        // 创建状态快照（在保存关键词前）
+        createSnapshot() {
+            this.snapshot = { ...this.current };
+            console.log('📸 创建状态快照:', this.snapshot);
+        },
+
+        // 恢复状态快照（在保存关键词后）
+        restoreSnapshot() {
+            if (this.snapshot) {
+                this.current = { ...this.snapshot };
+                console.log('🔄 恢复状态快照:', this.current);
+                this.snapshot = null;
+            }
+        },
+
+        // 设置当前视频ID
+        setCurrentVideoId(videoId) {
+            this.current.videoId = videoId;
+        },
+
+        // 获取当前视频ID
+        getCurrentVideoId() {
+            return this.current.videoId;
+        },
+
+        // 设置最后检查的视频ID
+        setLastCheckedVideoId(videoId) {
+            this.current.lastCheckedVideoId = videoId;
+        },
+
+        // 获取最后检查的视频ID
+        getLastCheckedVideoId() {
+            return this.current.lastCheckedVideoId;
+        },
+
+        // 检查是否在冷却期
+        isInCooldown() {
+            return Date.now() < this.current.cooldownUntil;
+        },
+
+        // 设置冷却期
+        setCooldown() {
+            this.current.cooldownUntil = Date.now() + COOLDOWN_DURATION;
+            console.log(`⏰ 设置冷却期，${COOLDOWN_DURATION / 1000}秒`);
+        },
+
+        // 重置冷却期
+        resetCooldown() {
+            this.current.cooldownUntil = 0;
+            console.log('🔄 重置冷却期');
+        },
+
+        // 设置处理状态
+        setProcessing(status) {
+            this.current.isProcessing = status;
+        },
+
+        // 获取处理状态
+        isProcessing() {
+            return this.current.isProcessing;
+        }
     };
     // =================================================
 
@@ -45,6 +136,8 @@
         return originalToString.call(this);
     };
 
+    initializeState();
+
     // 初始化关键词列表
     let keywords = GM_getValue(STORAGE_PREFIX + 'keywords', DEFAULT_KEYWORDS);
     let autoSkip = GM_getValue(STORAGE_PREFIX + 'auto_skip', DEFAULT_AUTO_SKIP);
@@ -54,6 +147,7 @@
     let blockAuthors = GM_getValue(STORAGE_PREFIX + 'block_authors', DEFAULT_BLOCK_AUTHORS);
     let blockVideoIds = GM_getValue(STORAGE_PREFIX + 'block_video_ids', DEFAULT_BLOCK_VIDEO_IDS);
     let timeFilter = GM_getValue(STORAGE_PREFIX + 'time_filter', DEFAULT_TIME_FILTER);
+    let debugMode = GM_getValue(STORAGE_PREFIX + 'debug_mode', DEFAULT_DEBUG_MODE);
     let filterStats = {
         total: 0,
         liveBlocked: 0,
@@ -64,19 +158,23 @@
         timeFiltered: 0,
         details: []
     };
-
-    let cooldownUntil = 0;
     let isPanelOpen = false;
     let keyboardBlockers = []; // 存储所有键盘事件阻止器
 
     // 注册油猴菜单
-    GM_registerMenuCommand('📝 管理过滤关键词', showKeywordManager);
+    GM_registerMenuCommand('📝 管理过滤规则', showKeywordManager);
     GM_registerMenuCommand('⚙️ 过滤设置', showFilterSettings);
-    GM_registerMenuCommand('📊 查看统计信息', showStats);
-    GM_registerMenuCommand('👤 作者屏蔽管理', showAuthorManager);
+    // GM_registerMenuCommand('📊 查看统计信息', showStats);
+    // GM_registerMenuCommand('👤 作者屏蔽管理', showAuthorManager);
     GM_registerMenuCommand('🎬 视频ID屏蔽管理', showVideoIdManager);
     GM_registerMenuCommand('⏰ 时间过滤设置', showTimeFilterSettings);
     GM_registerMenuCommand('🔄 重置冷却时间', resetCooldown);
+    GM_registerMenuCommand('🔄 强制刷新状态', forceRefreshPageState);
+    GM_registerMenuCommand('🔄 强制重置状态', () => {
+        stateManager.resetAll();
+        showNotification('已强制重置所有状态');
+        console.log('✅ 状态已完全重置:', stateManager.current);
+    });
 
     // 添加样式
     const styles = `
@@ -309,6 +407,113 @@
                 --card-bg: #2a2a2a;
             }
         }
+        /* 标签页样式 */
+        .tab-btn {
+            padding: 8px 16px;
+            border: none;
+            background: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 14px;
+        }
+        .tab-btn.active {
+            border-bottom-color: #fe2c55;
+            color: var(--text-color);
+        }
+        .tab-btn:hover {
+            color: var(--text-color);
+        }
+        .tab-content {
+            display: block;
+        }
+        /* Debug弹窗样式 */
+        .douyin-debug-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            z-index: 100002;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .douyin-debug-panel {
+            background: #1a1a1a;
+            border-radius: 12px;
+            padding: 24px;
+            width: 90%;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            font-family: 'Monaco', 'Menlo', monospace;
+            color: #fff;
+            border: 2px solid #ff4757;
+        }
+        .douyin-debug-panel h3 {
+            margin: 0 0 16px 0;
+            font-size: 18px;
+            color: #ff4757;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .douyin-debug-section {
+            margin-bottom: 16px;
+            padding: 12px;
+            background: #2a2a2a;
+            border-radius: 6px;
+        }
+        .douyin-debug-section h4 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #ffa502;
+        }
+        .douyin-debug-content {
+            font-size: 12px;
+            line-height: 1.4;
+            word-break: break-all;
+        }
+        .douyin-debug-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        .douyin-debug-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .douyin-debug-continue {
+            background: #2ed573;
+            color: white;
+        }
+        .douyin-debug-continue:hover {
+            background: #26c965;
+        }
+        .douyin-debug-cancel {
+            background: #57606f;
+            color: white;
+        }
+        .douyin-debug-cancel:hover {
+            background: #4b5562;
+        }
+        .douyin-debug-skip {
+            background: #ffa502;
+            color: white;
+        }
+        .douyin-debug-skip:hover {
+            background: #e59400;
+        }
     `;
 
     const styleSheet = document.createElement('style');
@@ -522,51 +727,102 @@
         manager.innerHTML = `
         <h3>
             <span>🎯</span>
-            <span>过滤关键词管理</span>
+            <span>过滤规则管理</span>
         </h3>
-        <div style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary);">
-            共 ${keywords.length} 个关键词 | 已过滤 ${filterStats.total} 个视频${cooldownText}
+        
+        <!-- 标签页导航 -->
+        <div style="display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);">
+            <button class="tab-btn active" data-tab="keywords" style="padding: 8px 16px; border: none; background: none; border-bottom: 2px solid #fe2c55; color: var(--text-color); cursor: pointer;">
+                📝 关键词屏蔽
+            </button>
+            <button class="tab-btn" data-tab="authors" style="padding: 8px 16px; border: none; background: none; border-bottom: 2px solid transparent; color: var(--text-secondary); cursor: pointer;">
+                👤 作者屏蔽
+            </button>
         </div>
-        <textarea id="keyword-textarea" placeholder="每行一个关键词
+
+        <!-- 统计信息 -->
+        <div style="margin-bottom: 16px; font-size: 13px; color: var(--text-secondary);">
+            关键词: ${keywords.length} 个 | 作者: ${blockAuthors.length} 个 | 已过滤 ${filterStats.total} 个视频${cooldownText}
+        </div>
+
+        <!-- 关键词屏蔽标签页 -->
+        <div id="keywords-tab" class="tab-content">
+            <textarea id="keyword-textarea" placeholder="每行一个关键词或标签
 
 示例：
 超级战队
 特摄
+#游戏
 /正则表达式/
 
 支持正则表达式：
 /\\d+集/
 /战队.*/
 ">${keywords.join('\n')}</textarea>
-        <div class="button-group">
-            <button class="close-btn">取消</button>
-            <button class="save-btn">保存并应用</button>
         </div>
+
+        <!-- 作者屏蔽标签页 -->
+        <div id="authors-tab" class="tab-content" style="display: none;">
+            <textarea id="author-textarea" placeholder="每行一个作者名（支持部分匹配）
+
+示例：
+影视飓风
+老番茄
+张三
+
+注意：作者名不区分大小写，包含指定文本即会被屏蔽">${blockAuthors.join('\n')}</textarea>
+        </div>
+
+        <div class="button-group">
+            <button class="close-btn" id="manager-close-btn">取消</button>
+            <button class="save-btn" id="manager-save-btn">保存并应用</button>
+        </div>
+        
         <div class="help-text">
             <div><strong>💡 使用说明：</strong></div>
-            <div>• 每行输入一个关键词，支持中英文</div>
-            <div>• 支持正则表达式，用 /.../ 包裹</div>
-            <div>• 匹配成功后自动触发"不感兴趣"</div>
-            <div>• 修改后立即生效，无需刷新页面</div>
-            <div>• <strong>保存后将立即应用到当前页面</strong></div>
-            <div>• 在精选页面会重新过滤所有视频卡片</div>
-            <div>• 面板打开时键盘完全由面板控制</div>
-            <div>• 按 ESC 键或点击外部关闭面板</div>
+            <div id="keywords-help">
+                <div>• 每行输入一个关键词或标签，支持中英文</div>
+                <div>• 支持正则表达式，用 /.../ 包裹</div>
+                <div>• 标签以 # 开头，可在推荐页右键屏蔽</div>
+                <div>• 匹配成功后自动触发"不感兴趣"</div>
+            </div>
+            <div id="authors-help" style="display: none;">
+                <div>• 每行输入一个作者名，支持部分匹配</div>
+                <div>• 不区分大小写，包含指定文本即会被屏蔽</div>
+                <div>• 可在推荐页右键作者名快速屏蔽</div>
+                <div>• 屏蔽后立即跳过该作者的视频</div>
+            </div>
+            <div style="margin-top: 8px;">
+                <div>• 修改后立即生效，无需刷新页面</div>
+                <div>• <strong>保存后将立即应用到当前页面</strong></div>
+                <div>• 面板打开时键盘完全由面板控制</div>
+                <div>• 按 ESC 键或点击外部关闭面板</div>
+            </div>
         </div>
     `;
 
         const closeManager = () => {
+            console.log('📝 管理面板关闭，恢复键盘控制');
             overlay.remove();
             restoreKeyboard();
+
+            // 面板关闭后轻微刷新状态
+            setTimeout(() => {
+                forceRefreshPageState();
+            }, 100);
         };
 
         overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) closeManager();
+            if (e.target === overlay) {
+                console.log('📝 点击外部关闭管理面板');
+                closeManager();
+            }
         });
 
         // ESC键关闭面板
         const escHandler = (e) => {
             if (e.key === 'Escape') {
+                console.log('📝 ESC键关闭管理面板');
                 closeManager();
                 document.removeEventListener('keydown', escHandler);
             }
@@ -576,22 +832,295 @@
         overlay.appendChild(manager);
         document.body.appendChild(overlay);
 
-        // 设置保存按钮事件处理器
+        // 设置标签页切换
         setTimeout(() => {
-            setupKeywordManagerSaveHandler();
+            const tabBtns = manager.querySelectorAll('.tab-btn');
+            const tabContents = manager.querySelectorAll('.tab-content');
+            const keywordsHelp = manager.querySelector('#keywords-help');
+            const authorsHelp = manager.querySelector('#authors-help');
 
-            const textarea = manager.querySelector('#keyword-textarea');
-            const closeBtn = manager.querySelector('.close-btn');
+            tabBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    // 移除所有激活状态
+                    tabBtns.forEach(b => {
+                        b.style.borderBottomColor = 'transparent';
+                        b.style.color = 'var(--text-secondary)';
+                    });
+                    tabContents.forEach(content => content.style.display = 'none');
+                    keywordsHelp.style.display = 'none';
+                    authorsHelp.style.display = 'none';
 
-            if (textarea) {
-                textarea.focus();
-                textarea.setSelectionRange(0, 0);
+                    // 激活当前标签
+                    btn.style.borderBottomColor = '#fe2c55';
+                    btn.style.color = 'var(--text-color)';
+
+                    const tabName = btn.getAttribute('data-tab');
+                    const activeTab = manager.querySelector(`#${tabName}-tab`);
+                    if (activeTab) activeTab.style.display = 'block';
+
+                    if (tabName === 'keywords') {
+                        keywordsHelp.style.display = 'block';
+                    } else if (tabName === 'authors') {
+                        authorsHelp.style.display = 'block';
+                    }
+                });
+            });
+
+            // 设置保存按钮事件处理器
+            setupCombinedSaveHandler(manager, closeManager);
+
+            const keywordTextarea = manager.querySelector('#keyword-textarea');
+            const closeBtn = manager.querySelector('#manager-close-btn');
+
+            if (keywordTextarea) {
+                keywordTextarea.focus();
+                keywordTextarea.setSelectionRange(0, 0);
             }
 
             if (closeBtn) {
                 closeBtn.addEventListener('click', closeManager);
             }
         }, 100);
+    }
+
+    // 设置组合保存处理器
+    // 完全重写设置组合保存处理器
+    function setupCombinedSaveHandler(manager, closeManager) {
+        const saveBtn = manager.querySelector('.save-btn');
+        if (saveBtn) {
+            // 移除旧的事件监听器
+            const newSaveBtn = saveBtn.cloneNode(true);
+            saveBtn.parentNode.replaceChild(newSaveBtn, saveBtn);
+
+            // 添加新的事件监听器
+            newSaveBtn.addEventListener('click', function () {
+                const keywordTextarea = manager.querySelector('#keyword-textarea');
+                const authorTextarea = manager.querySelector('#author-textarea');
+
+                if (keywordTextarea && authorTextarea) {
+                    const newKeywords = keywordTextarea.value
+                        .split('\n')
+                        .map(k => k.trim())
+                        .filter(k => k.length > 0);
+
+                    const newAuthors = authorTextarea.value
+                        .split('\n')
+                        .map(a => a.trim())
+                        .filter(a => a.length > 0);
+
+                    console.log('💾 开始保存关键词和作者屏蔽...', {
+                        newKeywords: newKeywords,
+                        newAuthors: newAuthors
+                    });
+
+                    // 在保存前创建状态快照
+                    stateManager.createSnapshot();
+
+                    // 保存关键词
+                    keywords = newKeywords;
+                    GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+
+                    // 保存作者屏蔽
+                    blockAuthors = newAuthors;
+                    GM_setValue(STORAGE_PREFIX + 'block_authors', blockAuthors);
+
+                    console.log('✅ 保存完成:', {
+                        keywords: keywords,
+                        blockAuthors: blockAuthors
+                    });
+
+                    closeManager();
+
+                    // 显示保存成功的通知
+                    showNotification(`已保存 ${keywords.length} 个关键词和 ${blockAuthors.length} 个作者屏蔽`);
+
+                    // 关键修复：延迟后执行强制重新检查，但使用全新的状态
+                    setTimeout(() => {
+                        console.log('🚀 执行保存后的强制重新检查');
+                        executePostSaveCheck();
+                    }, 300);
+                }
+            });
+        }
+    }
+
+    // 执行保存后的检查
+    function executePostSaveCheck() {
+        console.log('🔍 执行保存后检查流程');
+
+        // 完全重置状态
+        stateManager.resetAll();
+
+        // 强制重新检测当前视频
+        setTimeout(() => {
+            const currentVideoInfo = getCurrentVideoInfo();
+            const currentVideoId = currentVideoInfo ? currentVideoInfo.videoId : null;
+
+            console.log('🎯 保存后检查 - 当前视频:', {
+                videoId: currentVideoId,
+                element: !!currentVideoInfo
+            });
+
+            if (currentVideoId) {
+                // 设置新的状态
+                stateManager.setCurrentVideoId(currentVideoId);
+                stateManager.setLastCheckedVideoId(currentVideoId);
+
+                console.log('🔍 立即检查当前视频是否匹配新规则');
+
+                // 直接调用检查函数，绕过所有防抖和状态检查
+                immediateCheckCurrentVideo();
+            } else {
+                console.log('❌ 保存后检查 - 未找到当前视频');
+            }
+        }, 200);
+    }
+
+    // 立即检查当前视频（绕过所有状态检查）
+    function immediateCheckCurrentVideo() {
+        console.log('⚡ 立即检查当前视频');
+
+        if (stateManager.isProcessing()) {
+            console.log('⏸️ 已有检查在进行中，跳过');
+            return;
+        }
+
+        stateManager.setProcessing(true);
+
+        try {
+            const videoText = getVideoInfoText();
+            const author = getCurrentAuthor();
+            const description = getCurrentDescription();
+            const currentVideoId = stateManager.getCurrentVideoId();
+
+            console.log('🔍 立即检查 - 视频信息:', {
+                videoId: currentVideoId,
+                videoText: videoText,
+                author: author,
+                description: description
+            });
+
+            if (!videoText) {
+                console.log('❌ 立即检查 - 未获取到视频文本');
+                stateManager.setProcessing(false);
+                return;
+            }
+
+            // 检查作者屏蔽
+            if (window.location.href.includes('recommend=1')) {
+                if (author && isAuthorBlocked(author)) {
+                    console.log(`✅ 立即检查 - 匹配作者屏蔽: ${author}`);
+
+                    filterStats.total++;
+                    filterStats.authorsBlocked++;
+                    filterStats.details.push({
+                        keyword: `作者: ${author}`,
+                        content: videoText.substring(0, 50),
+                        timestamp: new Date().toLocaleTimeString(),
+                        immediate: true
+                    });
+
+                    if (debugMode) {
+                        console.log('🐛 立即检查 - 进入作者屏蔽调试流程');
+                        showDebugPanel(
+                            `立即检查 - 作者屏蔽: ${author}`,
+                            author,
+                            description,
+                            `作者: ${author}`
+                        ).then(() => {
+                            stateManager.setProcessing(false);
+                        });
+                    } else {
+                        stateManager.setCooldown();
+                        setTimeout(() => {
+                            triggerDisinterest();
+                            console.log('🚫 立即检查 - 已触发不感兴趣（作者屏蔽）');
+                            showNotification(`已屏蔽作者 ${author}`);
+                            stateManager.setProcessing(false);
+                        }, 300);
+                    }
+                    return;
+                }
+            }
+
+            // 检查关键词匹配
+            const matchedKeyword = isTextMatched(videoText);
+
+            if (matchedKeyword) {
+                console.log(`✅ 立即检查 - 匹配关键词: ${matchedKeyword}`);
+
+                filterStats.total++;
+                filterStats.details.push({
+                    keyword: matchedKeyword,
+                    content: videoText.substring(0, 50),
+                    timestamp: new Date().toLocaleTimeString(),
+                    immediate: true
+                });
+
+                if (debugMode) {
+                    console.log('🐛 立即检查 - 进入关键词屏蔽调试流程');
+                    showDebugPanel(
+                        `立即检查 - 关键词匹配: ${matchedKeyword}`,
+                        author,
+                        description,
+                        matchedKeyword
+                    ).then(() => {
+                        stateManager.setProcessing(false);
+                    });
+                } else {
+                    stateManager.setCooldown();
+                    setTimeout(() => {
+                        triggerDisinterest();
+                        console.log('🚫 立即检查 - 已触发不感兴趣');
+                        showNotification(`已屏蔽视频`);
+                        stateManager.setProcessing(false);
+                    }, 300);
+                }
+            } else {
+                console.log('❌ 立即检查 - 未匹配任何关键词');
+                stateManager.setProcessing(false);
+            }
+        } catch (error) {
+            console.error('❌ 立即检查出错:', error);
+            stateManager.setProcessing(false);
+        }
+    }
+
+    function resetAllDetectionStates() {
+        stateManager.resetAll();
+        console.log('🔄 已重置所有检测状态');
+    }
+
+    function forceCheckCurrentVideo() {
+        console.log('🔍 强制检查当前视频');
+
+        // 重置状态确保可以立即检查
+        resetAllDetectionStates();
+
+        // 如果是推荐页，立即执行检查
+        if (window.location.href.includes('recommend=1')) {
+            console.log('🎯 在推荐页执行强制检查');
+
+            // 使用setTimeout确保DOM已更新
+            setTimeout(() => {
+                // 重新获取当前视频信息
+                const currentVideoInfo = getCurrentVideoInfo();
+                const currentVideoId = currentVideoInfo ? currentVideoInfo.videoId : null;
+
+                console.log('🔍 强制检查 - 当前视频信息:', {
+                    videoId: currentVideoId,
+                    element: !!currentVideoInfo?.element
+                });
+
+                if (currentVideoId) {
+                    stateManager.setLastCheckedVideoId(currentVideoId);
+                    stateManager.setCurrentVideoId(currentVideoId);
+                    immediateCheckCurrentVideo(); // 使用立即检查而不是常规检查
+                } else {
+                    console.log('❌ 强制检查 - 未找到当前视频');
+                }
+            }, 300);
+        }
     }
 
     // 显示过滤设置
@@ -652,6 +1181,17 @@
                 </div>
             </label>
         </div>
+        <div class="setting-item">
+            <label>
+                <input type="checkbox" id="debug-mode" ${debugMode ? 'checked' : ''}>
+                <div>
+                    <div style="font-weight: 500; color: var(--text-color);">调试模式</div>
+                    <div style="font-size: 12px; color: var(--text-secondary); margin-top: 2px;">
+                        屏蔽前显示调试信息，用于诊断屏蔽问题
+                    </div>
+                </div>
+            </label>
+        </div>
         <div class="button-group">
             <button class="close-btn">取消</button>
             <button class="save-btn">保存设置</button>
@@ -664,6 +1204,7 @@
         const blockLiveCheckbox = manager.querySelector('#block-live');
         const hideCommentsCheckbox = manager.querySelector('#hide-comments');
         const blockAdsCheckbox = manager.querySelector('#block-ads');
+        const debugModeCheckbox = manager.querySelector('#debug-mode');
 
         const closeManager = () => {
             overlay.remove();
@@ -675,13 +1216,16 @@
             blockLive = blockLiveCheckbox.checked;
             const oldHideComments = hideComments;
             const oldBlockAds = blockAds;
+            const oldDebugMode = debugMode;
             hideComments = hideCommentsCheckbox.checked;
             blockAds = blockAdsCheckbox.checked;
+            debugMode = debugModeCheckbox.checked;
 
             GM_setValue(STORAGE_PREFIX + 'auto_skip', autoSkip);
             GM_setValue(STORAGE_PREFIX + 'block_live', blockLive);
             GM_setValue(STORAGE_PREFIX + 'hide_comments', hideComments);
             GM_setValue(STORAGE_PREFIX + 'block_ads', blockAds);
+            GM_setValue(STORAGE_PREFIX + 'debug_mode', debugMode);
 
             closeManager();
             showNotification('设置已保存');
@@ -702,13 +1246,18 @@
                 }
             }
 
+            if (oldDebugMode !== debugMode) {
+                showNotification(debugMode ? '调试模式已开启' : '调试模式已关闭');
+            }
+
             console.log('🔍 应用新设置，检查当前视频...');
-            lastCheckedVideoId = null;
+            // 使用状态管理器而不是旧的全局变量
+            stateManager.resetAll();
             setTimeout(() => {
                 if (isJingxuanPage()) {
                     checkAndFilterJingxuanCards();
                 } else {
-                    checkAndFilter();
+                    immediateCheckCurrentVideo(); // 使用立即检查
                 }
             }, 100);
         });
@@ -729,97 +1278,97 @@
         document.body.appendChild(overlay);
     }
 
-    // 显示统计信息
-    function showStats() {
-        takeOverKeyboard();
+    // // 显示统计信息
+    // function showStats() {
+    //     takeOverKeyboard();
 
-        const overlay = document.createElement('div');
-        overlay.className = 'douyin-keyword-manager-overlay';
+    //     const overlay = document.createElement('div');
+    //     overlay.className = 'douyin-keyword-manager-overlay';
 
-        const keywordStats = {};
-        filterStats.details.forEach(detail => {
-            keywordStats[detail.keyword] = (keywordStats[detail.keyword] || 0) + 1;
-        });
+    //     const keywordStats = {};
+    //     filterStats.details.forEach(detail => {
+    //         keywordStats[detail.keyword] = (keywordStats[detail.keyword] || 0) + 1;
+    //     });
 
-        const topKeywords = Object.entries(keywordStats)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5);
+    //     const topKeywords = Object.entries(keywordStats)
+    //         .sort((a, b) => b[1] - a[1])
+    //         .slice(0, 5);
 
-        const manager = document.createElement('div');
-        manager.className = 'douyin-keyword-manager';
-        manager.innerHTML = `
-        <h3>
-            <span>📊</span>
-            <span>过滤统计</span>
-        </h3>
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.total}</div>
-                <div class="stat-label">已过滤视频</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.adsBlocked}</div>
-                <div class="stat-label">已屏蔽广告</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.liveBlocked}</div>
-                <div class="stat-label">已屏蔽直播</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.commentsHidden}</div>
-                <div class="stat-label">已隐藏评论</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${keywords.length}</div>
-                <div class="stat-label">关键词数量</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.authorsBlocked}</div>
-                <div class="stat-label">作者屏蔽</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.videoIdsBlocked}</div>
-                <div class="stat-label">视频ID屏蔽</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">${filterStats.timeFiltered}</div>
-                <div class="stat-label">时间过滤</div>
-            </div>
-        </div>
-        <div class="help-text">
-            <div><strong>🔥 最常命中过滤条件：</strong></div>
-            ${topKeywords.length > 0
-                ? topKeywords.map(([k, count]) => `<div>• ${k}: ${count} 次</div>`).join('')
-                : '<div style="color: var(--text-secondary);">暂无数据</div>'
-            }
-        </div>
-        <div class="button-group">
-            <button class="close-btn">关闭</button>
-        </div>
-    `;
+    //     const manager = document.createElement('div');
+    //     manager.className = 'douyin-keyword-manager';
+    //     manager.innerHTML = `
+    //     <h3>
+    //         <span>📊</span>
+    //         <span>过滤统计</span>
+    //     </h3>
+    //     <div class="stats-grid">
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.total}</div>
+    //             <div class="stat-label">已过滤视频</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.adsBlocked}</div>
+    //             <div class="stat-label">已屏蔽广告</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.liveBlocked}</div>
+    //             <div class="stat-label">已屏蔽直播</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.commentsHidden}</div>
+    //             <div class="stat-label">已隐藏评论</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${keywords.length}</div>
+    //             <div class="stat-label">关键词数量</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.authorsBlocked}</div>
+    //             <div class="stat-label">作者屏蔽</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.videoIdsBlocked}</div>
+    //             <div class="stat-label">视频ID屏蔽</div>
+    //         </div>
+    //         <div class="stat-card">
+    //             <div class="stat-number">${filterStats.timeFiltered}</div>
+    //             <div class="stat-label">时间过滤</div>
+    //         </div>
+    //     </div>
+    //     <div class="help-text">
+    //         <div><strong>🔥 最常命中过滤条件：</strong></div>
+    //         ${topKeywords.length > 0
+    //             ? topKeywords.map(([k, count]) => `<div>• ${k}: ${count} 次</div>`).join('')
+    //             : '<div style="color: var(--text-secondary);">暂无数据</div>'
+    //         }
+    //     </div>
+    //     <div class="button-group">
+    //         <button class="close-btn">关闭</button>
+    //     </div>
+    // `;
 
-        const closeBtn = manager.querySelector('.close-btn');
+    //     const closeBtn = manager.querySelector('.close-btn');
 
-        const closeManager = () => {
-            overlay.remove();
-            restoreKeyboard();
-        };
+    //     const closeManager = () => {
+    //         overlay.remove();
+    //         restoreKeyboard();
+    //     };
 
-        closeBtn.addEventListener('click', closeManager);
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) closeManager();
-        });
+    //     closeBtn.addEventListener('click', closeManager);
+    //     overlay.addEventListener('click', (e) => {
+    //         if (e.target === overlay) closeManager();
+    //     });
 
-        document.addEventListener('keydown', function escHandler(e) {
-            if (e.key === 'Escape') {
-                closeManager();
-                document.removeEventListener('keydown', escHandler);
-            }
-        });
+    //     document.addEventListener('keydown', function escHandler(e) {
+    //         if (e.key === 'Escape') {
+    //             closeManager();
+    //             document.removeEventListener('keydown', escHandler);
+    //         }
+    //     });
 
-        overlay.appendChild(manager);
-        document.body.appendChild(overlay);
-    }
+    //     overlay.appendChild(manager);
+    //     document.body.appendChild(overlay);
+    // }
 
     // 检查文本是否匹配关键词
     function isTextMatched(text) {
@@ -845,6 +1394,20 @@
 
     // 获取视频信息文本
     function getVideoInfoText() {
+        // 如果是推荐页，使用新的选择器
+        if (window.location.href.includes('recommend=1')) {
+            const accountElement = document.querySelector('.account-name-text');
+            const titleElement = document.querySelector('.title[data-e2e="video-desc"]');
+
+            let text = '';
+            if (accountElement) text += accountElement.innerText || accountElement.textContent;
+            if (titleElement) text += ' ' + (titleElement.innerText || titleElement.textContent);
+
+            console.log('🎯 推荐页获取到的文本:', text);
+            return text;
+        }
+
+        // 原有的普通页面逻辑保持不变
         const currentVideo = getCurrentVideoInfo();
         if (!currentVideo || !currentVideo.element) return '';
 
@@ -904,18 +1467,103 @@
         return true;
     }
 
-    // 检查并过滤
-    function checkAndFilter() {
-        console.log('🔍 开始检查视频...');
+    // 获取当前视频作者
+    function getCurrentAuthor() {
+        if (window.location.href.includes('recommend=1')) {
+            console.log('🔍 开始获取当前视频作者...');
 
-        if (isInCooldown()) {
+            // 方法1: 从当前视频容器获取
+            const currentVideoInfo = getCurrentVideoInfo();
+            if (currentVideoInfo && currentVideoInfo.element) {
+                const authorElement = currentVideoInfo.element.querySelector('.account-name-text');
+                if (authorElement) {
+                    const author = authorElement.innerText || authorElement.textContent;
+                    console.log('✅ 从视频容器获取作者:', author);
+                    return author;
+                }
+            }
+
+            // 方法2: 通过可见性获取
+            const authorElements = document.querySelectorAll('.account-name-text');
+            for (let element of authorElements) {
+                const rect = element.getBoundingClientRect();
+                if (rect.top >= 0 && rect.top < window.innerHeight) {
+                    const author = element.innerText || element.textContent;
+                    console.log('✅ 通过可见性获取作者:', author);
+                    return author;
+                }
+            }
+
+            console.log('❌ 未找到作者信息');
+            return '';
+        }
+        return '';
+    }
+
+    // 获取当前视频描述
+    function getCurrentDescription() {
+        if (window.location.href.includes('recommend=1')) {
+            console.log('🔍 开始获取当前视频简介...');
+
+            // 方法1: 从当前视频容器获取
+            const currentVideoInfo = getCurrentVideoInfo();
+            if (currentVideoInfo && currentVideoInfo.element) {
+                const titleElement = currentVideoInfo.element.querySelector('.title[data-e2e="video-desc"]');
+                if (titleElement) {
+                    const description = titleElement.innerText || titleElement.textContent;
+                    console.log('✅ 从视频容器获取简介:', description.substring(0, 50) + '...');
+                    return description;
+                }
+            }
+
+            // 方法2: 通过可见性获取
+            const titleElements = document.querySelectorAll('.title[data-e2e="video-desc"]');
+            for (let element of titleElements) {
+                const rect = element.getBoundingClientRect();
+                if (rect.top >= 0 && rect.top < window.innerHeight) {
+                    const description = element.innerText || element.textContent;
+                    console.log('✅ 通过可见性获取简介:', description.substring(0, 50) + '...');
+                    return description;
+                }
+            }
+
+            console.log('❌ 未找到简介信息');
+            return '';
+        }
+        return '';
+    }
+
+    // 检查并过滤
+    async function checkAndFilter() {
+        const currentVideoId = stateManager.getCurrentVideoId();
+
+        console.log('🔍 常规检查视频...', {
+            currentVideoId: currentVideoId,
+            lastCheckedVideoId: stateManager.getLastCheckedVideoId(),
+            inCooldown: stateManager.isInCooldown(),
+            isProcessing: stateManager.isProcessing()
+        });
+
+        // 状态检查
+        if (stateManager.isInCooldown()) {
             console.log('⏸️ 冷却期中，跳过检查');
+            return;
+        }
+
+        if (stateManager.isProcessing()) {
+            console.log('⏸️ 已有处理在进行中，跳过检查');
+            return;
+        }
+
+        // 重复检查保护
+        if (currentVideoId && currentVideoId === stateManager.getLastCheckedVideoId()) {
+            console.log('⏸️ 重复视频，跳过检查');
             return;
         }
 
         if (checkAndBlockLive()) {
             console.log('📺 已处理直播内容');
-            setCooldown();
+            stateManager.setCooldown();
             return;
         }
 
@@ -926,36 +1574,91 @@
 
         const videoText = getVideoInfoText();
         console.log('📝 视频文本内容:', videoText);
-        console.log('🔤 当前关键词列表:', keywords);
 
         if (!videoText) {
             console.log('⚠️ 未获取到视频文本');
             return;
         }
 
-        const matchedKeyword = isTextMatched(videoText);
+        // 获取作者和描述信息
+        const author = getCurrentAuthor();
+        const description = getCurrentDescription();
 
-        if (matchedKeyword) {
-            console.log(`✅ 匹配成功! 关键词: ${matchedKeyword}`);
-            console.log(`📝 视频内容: ${videoText.substring(0, 100)}...`);
+        console.log('🔍 检查条件:', {
+            author: author,
+            isAuthorBlocked: author ? isAuthorBlocked(author) : false,
+            hasMatchedKeyword: !!isTextMatched(videoText)
+        });
 
-            filterStats.total++;
-            filterStats.details.push({
-                keyword: matchedKeyword,
-                content: videoText.substring(0, 50),
-                timestamp: new Date().toLocaleTimeString()
-            });
+        stateManager.setProcessing(true);
 
-            setCooldown();
+        try {
+            // 检查作者屏蔽
+            if (window.location.href.includes('recommend=1')) {
+                if (author && isAuthorBlocked(author)) {
+                    console.log(`✅ 匹配作者屏蔽! 作者: ${author}`);
 
-            setTimeout(() => {
-                triggerDisinterest();
-                console.log('🚫 已触发不感兴趣');
+                    filterStats.total++;
+                    filterStats.authorsBlocked++;
+                    filterStats.details.push({
+                        keyword: `作者: ${author}`,
+                        content: videoText.substring(0, 50),
+                        timestamp: new Date().toLocaleTimeString()
+                    });
 
-                showNotification(`已屏蔽视频，${COOLDOWN_DURATION / 1000}秒内暂停检测`);
-            }, 300);
-        } else {
-            console.log('❌ 未匹配任何关键词');
+                    if (debugMode) {
+                        console.log('🐛 进入作者屏蔽调试流程');
+                        await showDebugPanel(
+                            `作者屏蔽: ${author}`,
+                            author,
+                            description,
+                            `作者: ${author}`
+                        );
+                    } else {
+                        stateManager.setCooldown();
+                        setTimeout(() => {
+                            triggerDisinterest();
+                            console.log('🚫 已触发不感兴趣（作者屏蔽）');
+                            showNotification(`已屏蔽作者 ${author}`);
+                        }, 300);
+                    }
+                    return;
+                }
+            }
+
+            const matchedKeyword = isTextMatched(videoText);
+
+            if (matchedKeyword) {
+                console.log(`✅ 匹配成功! 关键词: ${matchedKeyword}`);
+
+                filterStats.total++;
+                filterStats.details.push({
+                    keyword: matchedKeyword,
+                    content: videoText.substring(0, 50),
+                    timestamp: new Date().toLocaleTimeString()
+                });
+
+                if (debugMode) {
+                    console.log('🐛 进入关键词屏蔽调试流程');
+                    await showDebugPanel(
+                        `关键词匹配: ${matchedKeyword}`,
+                        author,
+                        description,
+                        matchedKeyword
+                    );
+                } else {
+                    stateManager.setCooldown();
+                    setTimeout(() => {
+                        triggerDisinterest();
+                        console.log('🚫 已触发不感兴趣');
+                        showNotification(`已屏蔽视频`);
+                    }, 300);
+                }
+            } else {
+                console.log('❌ 未匹配任何关键词');
+            }
+        } finally {
+            stateManager.setProcessing(false);
         }
     }
 
@@ -972,38 +1675,131 @@
         };
     }
 
-    let lastCheckedVideoId = null;
-
     // 获取当前视频ID
     function getCurrentVideoId() {
-        const currentVideo = getCurrentVideoInfo();
-        return currentVideo ? currentVideo.videoId : null;
+        return stateManager.getCurrentVideoId();
     }
+
+    function initializeState() {
+        stateManager.resetAll();
+        console.log('✅ 状态管理器初始化完成');
+    }
+
 
     // 检查并过滤的包装函数
     function checkAndFilterWithDebounce() {
-        if (isInCooldown()) {
+        const currentVideoInfo = getCurrentVideoInfo();
+        const currentVideoId = currentVideoInfo ? currentVideoInfo.videoId : null;
+
+        // 更新当前视频ID
+        stateManager.setCurrentVideoId(currentVideoId);
+
+        console.log('🔄 包装函数检查:', {
+            currentVideoId: currentVideoId,
+            lastCheckedVideoId: stateManager.getLastCheckedVideoId(),
+            inCooldown: stateManager.isInCooldown(),
+            isProcessing: stateManager.isProcessing()
+        });
+
+        if (stateManager.isInCooldown()) {
+            console.log('⏸️ 包装函数: 冷却期中，跳过检查');
             return;
         }
 
-        const currentVideoId = getCurrentVideoId();
-
-        if (currentVideoId && currentVideoId === lastCheckedVideoId) {
+        if (stateManager.isProcessing()) {
+            console.log('⏸️ 包装函数: 处理中，跳过检查');
             return;
         }
 
-        lastCheckedVideoId = currentVideoId;
+        // 重复检查保护
+        if (currentVideoId && currentVideoId === stateManager.getLastCheckedVideoId()) {
+            console.log('⏸️ 包装函数: 重复视频，跳过检查');
+            return;
+        }
 
-        setTimeout(() => {
-            checkAndFilter();
+        // 更新最后检查的视频ID
+        stateManager.setLastCheckedVideoId(currentVideoId);
+
+        setTimeout(async () => {
+            await checkAndFilter();
             if (hideComments) {
                 hideCommentButtons();
             }
         }, 300);
     }
 
+    // 强制刷新当前页面状态
+    function forceRefreshPageState() {
+        console.log('🔄 强制刷新页面状态');
+
+        if (window.location.href.includes('recommend=1')) {
+            // 重置所有状态
+            resetAllDetectionStates();
+
+            // 模拟轻微滚动以刷新内容
+            const scrollY = window.scrollY;
+            window.scrollTo(0, scrollY + 1);
+            setTimeout(() => {
+                window.scrollTo(0, scrollY);
+
+                // 触发重新检查
+                setTimeout(() => {
+                    console.log('🔍 强制刷新后重新检查');
+                    lastCheckedVideoId = null;
+                    checkAndFilterWithDebounce();
+                }, 200);
+            }, 100);
+        }
+    }
+
     // 获取当前激活的视频信息
     function getCurrentVideoInfo() {
+        // 如果是推荐页
+        if (window.location.href.includes('recommend=1')) {
+            console.log('🎯 开始检测推荐页当前视频...');
+
+            // 方法1: 通过播放状态检测
+            let video = document.querySelector('video');
+            let activeVideoContainer = null;
+
+            if (video) {
+                // 检查视频是否正在播放或可见
+                const rect = video.getBoundingClientRect();
+                const isVisible = rect.width > 0 && rect.height > 0 &&
+                    rect.top < window.innerHeight && rect.bottom > 0;
+
+                if (!video.paused || isVisible) {
+                    // 找到包含作者信息的最近容器
+                    activeVideoContainer = findVideoContainerWithAuthor(video);
+                    console.log('🎯 通过播放状态找到视频容器:', !!activeVideoContainer);
+                }
+            }
+
+            // 方法2: 如果方法1失败，通过滚动位置检测
+            if (!activeVideoContainer) {
+                activeVideoContainer = findVisibleVideoContainer();
+                console.log('🎯 通过滚动位置找到视频容器:', !!activeVideoContainer);
+            }
+
+            // 方法3: 如果方法2失败，通过active状态检测
+            if (!activeVideoContainer) {
+                activeVideoContainer = document.querySelector('[data-e2e="feed-active-video"]');
+                console.log('🎯 通过active状态找到视频容器:', !!activeVideoContainer);
+            }
+
+            if (activeVideoContainer) {
+                const videoId = activeVideoContainer.getAttribute('data-e2e-vid') || '';
+                return {
+                    element: activeVideoContainer,
+                    videoId: videoId
+                };
+            }
+
+            console.log('❌ 未找到当前视频容器');
+            return null;
+        }
+
+        // 原有的普通页面逻辑保持不变
         const activeVideo = document.querySelector('[data-e2e="feed-active-video"]');
         if (activeVideo) {
             const videoInfoWrap = activeVideo.querySelector('#video-info-wrap');
@@ -1032,6 +1828,51 @@
         return null;
     }
 
+    // 通过播放的视频元素找到包含作者信息的容器
+    function findVideoContainerWithAuthor(videoElement) {
+        let container = videoElement;
+
+        // 向上查找包含作者信息的容器
+        while (container && container !== document.body) {
+            // 检查当前容器是否包含作者信息
+            const authorElement = container.querySelector('.account-name-text');
+            if (authorElement) {
+                console.log('✅ 找到包含作者信息的容器');
+                return container;
+            }
+
+            // 检查是否到达视频卡片边界
+            if (container.hasAttribute('data-e2e-vid') ||
+                container.classList.contains('xg-container') ||
+                container.querySelector('[data-e2e-vid]')) {
+                console.log('✅ 找到视频卡片边界');
+                return container;
+            }
+
+            container = container.parentElement;
+        }
+
+        return null;
+    }
+
+    // 通过滚动位置找到当前可见的视频容器
+    function findVisibleVideoContainer() {
+        const videoContainers = document.querySelectorAll('[data-e2e-vid], .xg-container');
+        const viewportCenter = window.innerHeight / 2;
+
+        for (let container of videoContainers) {
+            const rect = container.getBoundingClientRect();
+
+            // 检查容器是否在视口中心附近
+            if (rect.top <= viewportCenter && rect.bottom >= viewportCenter) {
+                console.log('✅ 通过视口位置找到视频容器');
+                return container;
+            }
+        }
+
+        return null;
+    }
+
     const debouncedCheck = debounce(checkAndFilterWithDebounce, 100);
 
     // 监听滚动和视频切换
@@ -1047,11 +1888,60 @@
                 if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
                     Array.from(mutation.addedNodes).forEach(node => {
                         if (node.nodeType === 1) {
+                            // 检测视频元素的变化
+                            if (node.tagName === 'VIDEO' || (node.querySelector && node.querySelector('video'))) {
+                                console.log('🎯 检测到新的视频元素');
+                                shouldCheck = true;
+                            }
+
+                            // 检测作者信息的变化
+                            if (node.querySelector && node.querySelector('.account-name-text')) {
+                                console.log('🎯 检测到作者信息变化');
+                                shouldCheck = true;
+                            }
+
+                            // 检测简介信息的变化
+                            if (node.querySelector && node.querySelector('.title[data-e2e="video-desc"]')) {
+                                console.log('🎯 检测到简介信息变化');
+                                shouldCheck = true;
+                            }
+
                             // 普通视频页面检测
                             if (node.hasAttribute('data-e2e-vid') ||
                                 node.querySelector && node.querySelector('[data-e2e-vid]')) {
                                 shouldCheck = true;
                                 shouldHideComments = true;
+                            }
+
+                            // 推荐页特定检测
+                            if (window.location.href.includes('recommend=1')) {
+                                // 检测视频元素变化
+                                if (node.tagName === 'VIDEO' ||
+                                    node.querySelector && node.querySelector('video')) {
+                                    shouldCheck = true;
+                                    console.log('🎯 推荐页检测到视频元素变化');
+                                }
+
+                                // 检测用户信息变化
+                                if (node.classList && (
+                                    node.classList.contains('account') ||
+                                    node.classList.contains('video-create-time') ||
+                                    node.classList.contains('title') ||
+                                    node.textContent && (
+                                        node.textContent.includes('@') ||
+                                        node.textContent.includes('作者') ||
+                                        node.textContent.includes('发布')
+                                    )
+                                )) {
+                                    shouldCheck = true;
+                                    console.log('🎯 推荐页检测到用户信息或时间元素更新');
+                                }
+
+                                // 检测整个卡片容器变化
+                                if (node.querySelector && node.querySelector('.account-name-text, .title[data-e2e="video-desc"]')) {
+                                    shouldCheck = true;
+                                    console.log('🎯 推荐页检测到视频卡片内容更新');
+                                }
                             }
 
                             // 精选页面视频卡片检测
@@ -1179,7 +2069,7 @@
         document.addEventListener('keydown', (e) => {
             if (e.key === 'r' || e.key === 'R') {
                 setTimeout(() => {
-                    lastCheckedVideoId = null;
+                    stateManager.resetAll(); // 使用状态管理器重置
                     if (isJingxuanPage()) {
                         if (blockAds) {
                             checkAndRemoveAds();
@@ -1209,7 +2099,7 @@
                         checkAndFilterJingxuanCards();
                     } else {
                         console.log('🎯 切换到普通页面');
-                        lastCheckedVideoId = null;
+                        stateManager.resetAll(); // 使用状态管理器重置
                         checkAndFilterWithDebounce();
                     }
                 }, 500);
@@ -1231,13 +2121,12 @@
 
     // 检查是否在冷却期内
     function isInCooldown() {
-        return Date.now() < cooldownUntil;
+        return stateManager.isInCooldown();
     }
 
     // 设置冷却时间
     function setCooldown() {
-        cooldownUntil = Date.now() + COOLDOWN_DURATION;
-        console.log(`⏰ 进入冷却期，${COOLDOWN_DURATION / 1000}秒内不再触发`);
+        stateManager.setCooldown();
     }
 
     // 检测当前是否在精选页面
@@ -1847,7 +2736,7 @@
             <div>• 每行输入一个作者名，支持部分匹配</div>
             <div>• 不区分大小写，包含指定文本即会被屏蔽</div>
             <div>• 保存后将立即应用到当前页面</div>
-            <div>• 在精选页面会重新过滤所有视频卡片</div>
+            <div>• 在推荐页会立即跳过该作者的视频</div>
         </div>
     `;
 
@@ -1896,13 +2785,11 @@
                     closeManager();
                     showNotification(`已保存 ${blockAuthors.length} 个屏蔽作者`);
 
-                    // 立即应用到精选页面
-                    if (isJingxuanPage()) {
-                        showJingxuanCards();
-                        setTimeout(() => {
-                            checkAndFilterJingxuanCards();
-                        }, 100);
-                    }
+                    // 立即应用到当前页面
+                    lastCheckedVideoId = null;
+                    setTimeout(() => {
+                        checkAndFilter();
+                    }, 100);
                 });
             }
 
@@ -2118,7 +3005,7 @@
 
     // 冷却状态查询功能
     function getCooldownStatus() {
-        const remaining = Math.max(0, cooldownUntil - Date.now());
+        const remaining = Math.max(0, stateManager.current.cooldownUntil - Date.now());
         return {
             inCooldown: remaining > 0,
             remainingSeconds: Math.ceil(remaining / 1000)
@@ -2127,8 +3014,7 @@
 
     // 重置冷却时间功能
     function resetCooldown() {
-        cooldownUntil = 0;
-        console.log('🔄 冷却时间已重置');
+        stateManager.resetCooldown();
         showNotification('冷却时间已重置');
     }
 
@@ -2210,7 +3096,7 @@
     }
 
     // 屏蔽作者
-    function blockAuthor(author) {
+    async function blockAuthor(author, currentAuthor, currentDescription) {
         if (!author || blockAuthors.includes(author)) return;
 
         blockAuthors.push(author);
@@ -2220,14 +3106,51 @@
         showNotification(`已屏蔽作者: ${author}`);
 
         // 立即应用屏蔽
-        if (isJingxuanPage()) {
-            const cards = document.querySelectorAll('.discover-video-card-item');
-            cards.forEach(card => {
-                const cardAuthor = card.querySelector('.H0ZV35Qb .i1udsuGn');
-                if (cardAuthor && (cardAuthor.textContent || cardAuthor.innerText) === author) {
-                    smartRemoveCard(card, `作者: ${author}`);
-                }
-            });
+        if (window.location.href.includes('recommend=1')) {
+            if (debugMode) {
+                console.log('🐛 [Debug] 右键屏蔽作者，进入调试流程');
+                // 使用传入的当前视频信息，而不是重新获取
+                await showDebugPanel(
+                    `右键屏蔽作者: ${author}`,
+                    currentAuthor || getCurrentAuthor(), // 如果传入为空，则重新获取
+                    currentDescription || getCurrentDescription(),
+                    `作者: ${author}`
+                );
+            } else {
+                setTimeout(() => {
+                    triggerDisinterest();
+                    showNotification(`已屏蔽作者 ${author} 并跳过当前视频`);
+                }, 300);
+            }
+        }
+    }
+
+    // 屏蔽标签函数，确保立即生效
+    async function addTagToKeywords(tagText, currentAuthor, currentDescription) {
+        if (!tagText || keywords.includes(tagText)) return;
+
+        keywords.push(tagText);
+        GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+
+        showNotification(`已添加屏蔽标签: ${tagText}`);
+
+        // 立即应用屏蔽
+        if (window.location.href.includes('recommend=1')) {
+            if (debugMode) {
+                console.log('🐛 [Debug] 右键屏蔽标签，进入调试流程');
+                // 使用传入的当前视频信息，而不是重新获取
+                await showDebugPanel(
+                    `右键屏蔽标签: ${tagText}`,
+                    currentAuthor || getCurrentAuthor(), // 如果传入为空，则重新获取
+                    currentDescription || getCurrentDescription(),
+                    tagText
+                );
+            } else {
+                setTimeout(() => {
+                    triggerDisinterest();
+                    showNotification(`已屏蔽标签 ${tagText} 并跳过当前视频`);
+                }, 300);
+            }
         }
     }
 
@@ -2265,57 +3188,103 @@
 
     // 添加右键事件监听
     function addContextMenuListeners() {
-        // 使用事件委托处理右键点击
-        document.addEventListener('contextmenu', (e) => {
-            // 检查是否点击在作者名称上
-            const authorElement = e.target.closest('.H0ZV35Qb .i1udsuGn');
-            // 检查是否点击在视频标题上
-            const titleElement = e.target.closest('.bWzvoR9D');
+        document.addEventListener('contextmenu', function (e) {
+            // 检查是否点击在作者名称上（推荐页）
+            const accountNameElement = e.target.closest('.account-name-text');
 
-            if (authorElement || titleElement) {
+            // 检查是否点击在标签上
+            let tagElement = null;
+            let target = e.target;
+            while (target && target !== document) {
+                if (target.textContent && target.textContent.includes('#') &&
+                    target.textContent.trim().startsWith('#')) {
+                    tagElement = target;
+                    break;
+                }
+                target = target.parentElement;
+            }
+
+            if (accountNameElement || tagElement) {
                 e.preventDefault();
                 e.stopPropagation();
 
-                const cardInfo = getVideoCardInfo(e.target);
-                if (!cardInfo) return;
+                // 在右键点击时立即获取当前视频信息
+                console.log('🖱️ 右键点击，开始获取当前视频信息...');
+                const author = getCurrentAuthor();
+                const description = getCurrentDescription();
 
-                const { author, videoId, title } = cardInfo;
-                const isAuthorAlreadyBlocked = isAuthorBlocked(author);
-                const isVideoAlreadyBlocked = isVideoIdBlocked(videoId);
+                console.log('🖱️ 右键点击时获取的信息:', {
+                    author: author,
+                    description: description ? description.substring(0, 50) + '...' : '空'
+                });
 
                 const menuOptions = [];
 
-                // 作者相关选项
-                if (author) {
+                // 作者屏蔽选项
+                if (accountNameElement) {
+                    const clickedAuthor = accountNameElement.innerText || accountNameElement.textContent;
+                    const isAuthorAlreadyBlocked = isAuthorBlocked(clickedAuthor);
+
                     menuOptions.push({
                         icon: '👤',
-                        text: isAuthorAlreadyBlocked ? `已屏蔽作者: ${author}` : `屏蔽作者: ${author}`,
-                        action: () => blockAuthor(author),
+                        text: isAuthorAlreadyBlocked ? `已屏蔽作者: ${clickedAuthor}` : `屏蔽作者: ${clickedAuthor}`,
+                        action: () => {
+                            console.log('🔄 右键屏蔽作者:', clickedAuthor);
+                            blockAuthor(clickedAuthor, author, description);
+
+                            // 额外触发一次立即检查，确保生效
+                            setTimeout(() => {
+                                stateManager.resetAll(); // 使用状态管理器重置
+                                resetCooldown();
+                                setTimeout(() => {
+                                    immediateCheckCurrentVideo(); // 使用立即检查
+                                }, 200);
+                            }, 500);
+                        },
                         disabled: isAuthorAlreadyBlocked
                     });
                 }
 
-                // 视频相关选项
-                if (videoId) {
-                    const displayTitle = title ? title.substring(0, 15) + (title.length > 15 ? '...' : '') : '视频';
+                // 标签屏蔽选项
+                if (tagElement) {
+                    let tagText = tagElement.innerText || tagElement.textContent;
+                    tagText = tagText.trim();
+
+                    // 确保以 # 开头
+                    if (!tagText.startsWith('#')) {
+                        tagText = '#' + tagText;
+                    }
+
+                    const isTagAlreadyBlocked = isTextMatched(tagText);
+
                     menuOptions.push({
-                        icon: '🎬',
-                        text: isVideoAlreadyBlocked ? `已屏蔽视频` : `屏蔽视频: ${displayTitle}`,
-                        action: () => blockVideo(videoId, title),
-                        disabled: isVideoAlreadyBlocked
+                        icon: '🏷️',
+                        text: isTagAlreadyBlocked ? `已屏蔽标签: ${tagText}` : `屏蔽标签: ${tagText}`,
+                        action: () => {
+                            console.log('🔄 右键屏蔽标签:', tagText);
+                            addTagToKeywords(tagText, author, description);
+
+                            // 额外触发一次立即检查，确保生效
+                            setTimeout(() => {
+                                lastCheckedVideoId = null;
+                                resetCooldown();
+                                setTimeout(() => {
+                                    checkAndFilter();
+                                }, 200);
+                            }, 500);
+                        },
+                        disabled: isTagAlreadyBlocked
                     });
                 }
 
                 if (menuOptions.length > 0) {
-                    // 添加分隔符
-                    if (author && videoId) {
+                    if (menuOptions.length > 1) {
                         menuOptions.splice(1, 0, { type: 'divider' });
                     }
-
                     createContextMenu(e.clientX, e.clientY, menuOptions);
                 }
             }
-        });
+        }, true); // 使用捕获阶段
     }
 
     // 智能移除卡片函数
@@ -2475,6 +3444,180 @@
 
             }, i * 150);
         }
+    }
+
+    // Debug弹窗，显示视频检测的详细信息
+    function showDebugPanel(reason, author, description, matchedKeyword) {
+        console.log('🐛 [Debug] 显示调试面板:', { reason, author, description, matchedKeyword });
+
+        // 暂停当前视频
+        pauseCurrentVideo();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'douyin-debug-overlay';
+
+        const panel = document.createElement('div');
+        panel.className = 'douyin-debug-panel';
+        panel.innerHTML = `
+        <h3>
+            <span>🐛</span>
+            <span>屏蔽调试面板</span>
+        </h3>
+        
+        <div class="douyin-debug-section">
+            <h4>屏蔽原因</h4>
+            <div class="douyin-debug-content">${reason}</div>
+        </div>
+        
+        <div class="douyin-debug-section">
+            <h4>匹配关键词</h4>
+            <div class="douyin-debug-content">${matchedKeyword || '无'}</div>
+        </div>
+        
+        <div class="douyin-debug-section">
+            <h4>视频作者</h4>
+            <div class="douyin-debug-content">${author || '未获取到作者信息'}</div>
+        </div>
+        
+        <div class="douyin-debug-section">
+            <h4>视频简介</h4>
+            <div class="douyin-debug-content">${description || '未获取到简介信息'}</div>
+        </div>
+        
+        <div class="douyin-debug-section">
+            <h4>状态管理器信息</h4>
+            <div class="douyin-debug-content">
+                当前视频ID: ${stateManager.getCurrentVideoId() || '无'}<br>
+                最后检查视频ID: ${stateManager.getLastCheckedVideoId() || '无'}<br>
+                冷却状态: ${stateManager.isInCooldown() ? '冷却中' : '正常'}<br>
+                处理状态: ${stateManager.isProcessing() ? '处理中' : '空闲'}<br>
+                状态快照: ${stateManager.snapshot ? '有' : '无'}
+            </div>
+        </div>
+        
+        <div class="douyin-debug-section">
+            <h4>系统信息</h4>
+            <div class="douyin-debug-content">
+                当前页面: ${window.location.href}<br>
+                自动跳过: ${autoSkip ? '开启' : '关闭'}<br>
+                关键词数量: ${keywords.length}<br>
+                作者屏蔽数量: ${blockAuthors.length}<br>
+                调试模式: ${debugMode ? '开启' : '关闭'}
+            </div>
+        </div>
+        
+        <div class="douyin-debug-actions">
+            <button class="douyin-debug-btn douyin-debug-skip" data-action="skip">跳过此视频</button>
+            <button class="douyin-debug-btn douyin-debug-cancel" data-action="cancel">取消屏蔽</button>
+            <button class="douyin-debug-btn douyin-debug-continue" data-action="continue">继续屏蔽</button>
+        </div>
+    `;
+
+        overlay.appendChild(panel);
+        document.body.appendChild(overlay);
+
+        // 添加按钮事件监听
+        panel.querySelectorAll('.douyin-debug-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const action = this.getAttribute('data-action');
+                handleDebugAction(action, reason, author, matchedKeyword);
+                overlay.remove();
+            });
+        });
+
+        // ESC键关闭
+        const escHandler = (e) => {
+            if (e.key === 'Escape') {
+                handleDebugAction('cancel', reason, author, matchedKeyword);
+                overlay.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        return new Promise((resolve) => {
+            overlay.resolve = resolve;
+        });
+    }
+
+    // 处理Debug操作
+    function handleDebugAction(action, reason, author, matchedKeyword) {
+        console.log('🐛 [Debug] 用户操作:', action, { reason, author, matchedKeyword });
+
+        switch (action) {
+            case 'continue':
+                console.log('🐛 [Debug] 用户选择继续屏蔽');
+                triggerDisinterest();
+                showNotification(`已屏蔽视频 (Debug: ${reason})`);
+                break;
+
+            case 'skip':
+                console.log('🐛 [Debug] 用户选择跳过此视频');
+                // 手动触发下一个视频
+                triggerNextVideo();
+                showNotification(`已跳过视频 (Debug: ${reason})`);
+                break;
+
+            case 'cancel':
+                console.log('🐛 [Debug] 用户取消屏蔽');
+                // 恢复视频播放
+                playCurrentVideo();
+                showNotification(`已取消屏蔽 (Debug: ${reason})`);
+                break;
+        }
+
+        // 记录调试操作
+        filterStats.details.push({
+            keyword: `[Debug] ${reason}`,
+            content: `操作: ${action}, 作者: ${author}, 匹配: ${matchedKeyword}`,
+            timestamp: new Date().toLocaleTimeString(),
+            debug: true
+        });
+    }
+
+    // 暂停当前视频
+    function pauseCurrentVideo() {
+        const video = document.querySelector('video');
+        if (video && !video.paused) {
+            video.pause();
+            console.log('🐛 [Debug] 已暂停视频');
+        }
+    }
+
+    // 播放当前视频
+    function playCurrentVideo() {
+        const video = document.querySelector('video');
+        if (video && video.paused) {
+            video.play().catch(e => console.log('🐛 [Debug] 播放视频失败:', e));
+            console.log('🐛 [Debug] 已恢复视频播放');
+        }
+    }
+
+    // 触发下一个视频
+    function triggerNextVideo() {
+        // 方法1: 模拟下滑手势
+        const swipeEvent = new Event('swipe', { bubbles: true });
+        document.dispatchEvent(swipeEvent);
+
+        // 方法2: 模拟键盘向下键
+        const keyEvent = new KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            code: 'ArrowDown',
+            keyCode: 40,
+            which: 40,
+            bubbles: true
+        });
+        document.dispatchEvent(keyEvent);
+
+        // 方法3: 触发触摸事件
+        const touchEvent = new TouchEvent('touchmove', {
+            bubbles: true,
+            touches: [new Touch({ identifier: 1, target: document.body, clientX: 100, clientY: 300 })],
+            changedTouches: [new Touch({ identifier: 1, target: document.body, clientX: 100, clientY: 100 })]
+        });
+        document.dispatchEvent(touchEvent);
+
+        console.log('🐛 [Debug] 已触发切换到下一个视频');
     }
 
     // 检查页面状态并智能加载
