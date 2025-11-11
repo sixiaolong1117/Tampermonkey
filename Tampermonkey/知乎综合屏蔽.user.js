@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.11
+// @version      0.12
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -1038,8 +1038,16 @@
         // 在问题详情页和用户主页不启用屏蔽功能
         const isQuestionPage = window.location.href.includes('/question/');
         const isPeoplePage = window.location.href.includes('/people/');
-        if (isQuestionPage || isPeoplePage) {
-            return; // 直接返回，不执行任何屏蔽功能
+
+        // 问题详情页单独处理回答屏蔽
+        if (isQuestionPage) {
+            hideAnswersInQuestionPage();
+            return;
+        }
+
+        // 用户主页不启用屏蔽功能
+        if (isPeoplePage) {
+            return;
         }
 
         // 添加屏蔽按钮
@@ -1074,7 +1082,7 @@
             }
 
             // 时间屏蔽
-            if (!isQuestionPage && !isPeoplePage && isAnswerTooOld(contentItem)) {
+            if (isAnswerTooOld(contentItem)) {
                 contentItem.classList.add('custom-hidden');
 
                 // 根据设置决定是否显示占位块
@@ -1357,7 +1365,7 @@
     function logScriptInfo() {
         const isQuestionPage = window.location.href.includes('/question/');
         const isPeoplePage = window.location.href.includes('/people/');
-        const pageType = isQuestionPage ? '问题详情页' : (isPeoplePage ? '用户主页' : (isMainZhihuSite() ? '知乎首页' : '其他页面'));
+        const pageType = isQuestionPage ? '问题详情页（启用回答屏蔽）' : (isPeoplePage ? '用户主页' : (isMainZhihuSite() ? '知乎首页' : '其他页面'));
 
         console.log(
             `%c📚 知乎问题关键词屏蔽脚本已启动\n` +
@@ -1465,6 +1473,111 @@
         document.body.appendChild(trigger);
         trigger.offsetHeight;
         document.body.removeChild(trigger);
+    }
+
+    // 新增：处理问题详情页的回答屏蔽
+    function hideAnswersInQuestionPage() {
+        // 只在问题详情页执行
+        if (!window.location.href.includes('/question/')) {
+            return;
+        }
+
+        // 选择所有回答项
+        const answerItems = document.querySelectorAll('.AnswerItem, .ContentItem.AnswerItem');
+
+        answerItems.forEach(answerItem => {
+            // 跳过已处理的回答
+            if (answerItem.classList.contains('custom-hidden') || answerItem.dataset.blockProcessed === 'true') {
+                return;
+            }
+
+            // 标记为已处理
+            answerItem.dataset.blockProcessed = 'true';
+
+            // 获取作者名
+            const authorName = getAuthorNameFromElement(answerItem);
+
+            if (authorName && isUserBlocked(authorName)) {
+                answerItem.classList.add('custom-hidden');
+
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = `🚫 已屏蔽作者"${authorName}"的回答`;
+                    message.style.margin = '10px 0';
+
+                    // 替换回答内容
+                    answerItem.parentNode.replaceChild(message, answerItem);
+                } else {
+                    // 完全隐藏
+                    answerItem.style.display = 'none';
+                }
+
+                logHiddenContent(authorName, `作者: ${authorName}的回答`, answerItem, '用户屏蔽', '自动屏蔽');
+            } else if (authorName) {
+                // 为未屏蔽的回答添加屏蔽按钮
+                addBlockButtonToAnswer(answerItem, authorName);
+            }
+        });
+    }
+
+    // 新增：为问题详情页的回答添加屏蔽按钮
+    function addBlockButtonToAnswer(answerItem, authorName) {
+        // 如果设置为不显示按钮，直接返回
+        if (!showBlockButton) {
+            return;
+        }
+
+        // 检查是否已添加按钮
+        if (answerItem.querySelector('.zhihu-block-user-btn')) {
+            return;
+        }
+
+        // 查找作者信息区域
+        const authorInfo = answerItem.querySelector('.AuthorInfo, .AnswerItem-authorInfo');
+        if (!authorInfo) {
+            return;
+        }
+
+        // 创建屏蔽按钮
+        const blockUserBtn = document.createElement('button');
+        blockUserBtn.className = 'zhihu-block-user-btn';
+        blockUserBtn.textContent = '屏蔽作者';
+        blockUserBtn.title = `屏蔽作者: ${authorName}`;
+        blockUserBtn.style.marginLeft = '10px';
+
+        blockUserBtn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (!blockedUsers.includes(authorName)) {
+                const newUsers = [...blockedUsers, authorName];
+                saveAllSettingsAndSync(keywords, newUsers, `手动屏蔽用户: ${authorName}`);
+                console.log(`✅ 已添加屏蔽用户: "${authorName}"`);
+                showNotification(`已屏蔽作者: "${authorName}"`);
+            }
+
+            // 隐藏当前回答
+            if (!answerItem.classList.contains('custom-hidden')) {
+                answerItem.classList.add('custom-hidden');
+
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = `🚫 已屏蔽作者"${authorName}"的回答`;
+                    message.style.margin = '10px 0';
+                    answerItem.parentNode.replaceChild(message, answerItem);
+                } else {
+                    answerItem.style.display = 'none';
+                }
+
+                logHiddenContent(authorName, `作者: ${authorName}的回答`, answerItem, '用户屏蔽', '手动屏蔽');
+            }
+        });
+
+        // 将按钮添加到作者信息区域
+        authorInfo.appendChild(blockUserBtn);
     }
 
     // 注册油猴菜单命令
