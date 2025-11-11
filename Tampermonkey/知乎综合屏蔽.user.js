@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.10
+// @version      0.11
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -84,7 +84,7 @@
             color: #1890ff;
             background: rgba(24, 144, 255, 0.05);
         }
-        
+
         /* 其他现有样式保持不变 */
         .time-filter-hidden-message {
             margin: 10px 0;
@@ -538,8 +538,27 @@
 
                             // 版本检查
                             if (remoteData._script_version && remoteData._script_version !== SCRIPT_VERSION) {
-                                console.log(`☁️ 云端配置版本: ${remoteData._script_version}, 💻 本地脚本版本: ${SCRIPT_VERSION}`);
-                                showNotification(`🚨 云端配置来自 v${remoteData._script_version}，当前脚本 v${SCRIPT_VERSION}，建议升级脚本！`);
+                                const remoteVer = remoteData._script_version;
+                                const localVer = SCRIPT_VERSION;
+
+                                const cmp = compareVersion(remoteVer, localVer);
+                                if (cmp > 0) {
+                                    showNotification(`☁️ 云端配置来自 v${remoteVer}（高于 💻 本地 v${localVer}），🚨 请升级脚本！`);
+                                } else if (cmp < 0) {
+                                    console.log(`☁️ 云端配置 v${remoteVer} 较旧，已由 💻 本地 v${localVer} 适配`);
+                                    showNotification(`已加载 ☁️ 云端旧版配置（v${remoteVer}），💻 本地脚本 v${localVer} 已适配`);
+                                }
+                            }
+
+                            function compareVersion(a, b) {
+                                const pa = a.split('.').map(Number);
+                                const pb = b.split('.').map(Number);
+                                for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                                    const na = pa[i] || 0, nb = pb[i] || 0;
+                                    if (na > nb) return 1;
+                                    if (na < nb) return -1;
+                                }
+                                return 0;
                             }
 
                             if (remoteTimestamp <= localTimestamp) {
@@ -1210,9 +1229,9 @@
                     <label style="display: block; margin-bottom: 10px; font-weight: bold;">
                         隐藏多少天之前的回答：
                     </label>
-                    <input type="number" id="time-filter-days" 
-                        value="${timeFilterDays}" 
-                        min="1" max="3650" 
+                    <input type="number" id="time-filter-days"
+                        value="${timeFilterDays}"
+                        min="1" max="3650"
                         style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; background: var(--input-bg, white); color: var(--input-color, #333);">
                 </div>
                 <div class="button-group">
@@ -1305,7 +1324,7 @@
             return false;
         }
 
-        // 排除问题详情页 
+        // 排除问题详情页
         if (currentUrl.includes('/question/')) {
             return false;
         }
