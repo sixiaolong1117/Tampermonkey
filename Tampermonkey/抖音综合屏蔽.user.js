@@ -31,6 +31,14 @@
         enabled: false,
         days: 30
     };
+    // 视频数据缓存和过滤状态
+    const videoFilterState = {
+        filteredVideos: new Set(), // 已过滤的视频ID
+        pendingRequests: new Map(), // 待处理的请求
+        videoCache: new Map(), // 视频数据缓存
+        requestCount: 0 // 请求计数
+    };
+
     const stateManager = {
         // 当前检测状态
         current: {
@@ -923,6 +931,11 @@
                     // 保存作者屏蔽
                     blockAuthors = newAuthors;
                     GM_setValue(STORAGE_PREFIX + 'block_authors', blockAuthors);
+
+                    // ===== 在这里添加 =====
+                    // 清理过滤状态
+                    onFilterConfigUpdated();
+                    // =====================
 
                     console.log('✅ 保存完成:', {
                         keywords: keywords,
@@ -1877,6 +1890,12 @@
 
     // 监听滚动和视频切换
     function observeVideoChanges() {
+
+        // 初始化网络拦截过滤系统
+        if (window.location.href.includes('recommend=1')) {
+            initNetworkInterceptFilter();
+        }
+
         const observer = new MutationObserver((mutations) => {
             let shouldCheck = false;
             let shouldHideComments = false;
@@ -2099,7 +2118,15 @@
                         checkAndFilterJingxuanCards();
                     } else {
                         console.log('🎯 切换到普通页面');
-                        stateManager.resetAll(); // 使用状态管理器重置
+                        stateManager.resetAll();
+
+                        // ===== 在这里添加 =====
+                        // 如果切换到推荐页，重新初始化网络拦截
+                        if (url.includes('recommend=1')) {
+                            initNetworkInterceptFilter();
+                        }
+                        // =====================
+
                         checkAndFilterWithDebounce();
                     }
                 }, 500);
@@ -3715,6 +3742,423 @@
             observer.unobserve(card);
             observer.disconnect();
         }, 500);
+    }
+
+    // 拦截fetch请求
+    function interceptFetch() {
+        const originalFetch = window.fetch;
+
+        window.fetch = async function (...args) {
+            const [url, options] = args;
+
+            // 只拦截推荐视频的API请求
+            if (typeof url === 'string' && url.includes('/aweme/v1/web/aweme/feed/')) {
+                console.log('🌐 拦截到推荐视频请求:', url);
+
+                try {
+                    // 发起原始请求
+                    const response = await originalFetch.apply(this, args);
+                    const clonedResponse = response.clone();
+
+                    // 解析响应数据
+                    const data = await clonedResponse.json();
+
+                    // 过滤视频数据
+                    const filteredData = await filterVideoFeedData(data);
+
+                    // 如果所有视频都被过滤了，自动请求更多
+                    if (filteredData.aweme_list && filteredData.aweme_list.length === 0 && data.aweme_list && data.aweme_list.length > 0) {
+                        console.log('⚠️ 所有视频都被过滤，请求更多视频');
+                        return requestMoreVideos(url, options, originalFetch);
+                    }
+
+                    // 返回修改后的响应
+                    return new Response(JSON.stringify(filteredData), {
+                        status: response.status,
+                        statusText: response.statusText,
+                        headers: response.headers
+                    });
+                } catch (error) {
+                    console.error('❌ 过滤请求失败:', error);
+                    return originalFetch.apply(this, args);
+                }
+            }
+
+            return originalFetch.apply(this, args);
+        };
+
+        console.log('✅ Fetch拦截已安装');
+    }
+
+    // 拦截XMLHttpRequest
+    function interceptXHR() {
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            this._url = url;
+            this._method = method;
+            return originalOpen.call(this, method, url, ...rest);
+        };
+
+        XMLHttpRequest.prototype.send = function (body) {
+            if (this._url && typeof this._url === 'string' && this._url.includes('/aweme/v1/web/aweme/feed/')) {
+                console.log('🌐 拦截到XHR推荐视频请求:', this._url);
+
+                const originalOnLoad = this.onload;
+                const originalOnReadyStateChange = this.onreadystatechange;
+
+                this.onreadystatechange = async function () {
+                    if (this.readyState === 4 && this.status === 200) {
+                        try {
+                            const data = JSON.parse(this.responseText);
+                            const filteredData = await filterVideoFeedData(data);
+
+                            // 替换响应数据
+                            Object.defineProperty(this, 'responseText', {
+                                writable: true,
+                                value: JSON.stringify(filteredData)
+                            });
+
+                            Object.defineProperty(this, 'response', {
+                                writable: true,
+                                value: JSON.stringify(filteredData)
+                            });
+                        } catch (error) {
+                            console.error('❌ XHR过滤失败:', error);
+                        }
+                    }
+
+                    if (originalOnReadyStateChange) {
+                        return originalOnReadyStateChange.apply(this, arguments);
+                    }
+                };
+
+                this.onload = function () {
+                    if (originalOnLoad) {
+                        return originalOnLoad.apply(this, arguments);
+                    }
+                };
+            }
+
+            return originalSend.call(this, body);
+        };
+
+        console.log('✅ XMLHttpRequest拦截已安装');
+    }
+
+    // 过滤视频Feed数据
+    async function filterVideoFeedData(data) {
+        if (!data || !data.aweme_list || !Array.isArray(data.aweme_list)) {
+            return data;
+        }
+
+        console.log(`🔍 开始过滤 ${data.aweme_list.length} 个视频`);
+
+        const originalCount = data.aweme_list.length;
+        let filteredCount = 0;
+
+        // 过滤视频列表
+        data.aweme_list = data.aweme_list.filter(video => {
+            const shouldKeep = !shouldFilterVideo(video);
+
+            if (!shouldKeep) {
+                filteredCount++;
+                const videoId = video.aweme_id;
+                videoFilterState.filteredVideos.add(videoId);
+
+                // 记录过滤信息
+                console.log(`🚫 过滤视频: ${videoId}`, {
+                    author: video.author?.nickname,
+                    desc: video.desc?.substring(0, 50)
+                });
+            }
+
+            return shouldKeep;
+        });
+
+        console.log(`✅ 过滤完成: 原始${originalCount}个, 过滤${filteredCount}个, 剩余${data.aweme_list.length}个`);
+
+        // 更新统计
+        if (filteredCount > 0) {
+            filterStats.total += filteredCount;
+            showNotification(`已拦截 ${filteredCount} 个不感兴趣的视频`);
+        }
+
+        return data;
+    }
+
+    // 判断视频是否应该被过滤
+    function shouldFilterVideo(video) {
+        if (!video) return false;
+
+        const videoId = video.aweme_id;
+        const author = video.author?.nickname || '';
+        const desc = video.desc || '';
+        const tags = video.text_extra || [];
+
+        // 1. 检查视频ID屏蔽
+        if (blockVideoIds.includes(videoId)) {
+            console.log(`✅ 匹配视频ID屏蔽: ${videoId}`);
+            filterStats.videoIdsBlocked++;
+            return true;
+        }
+
+        // 2. 检查作者屏蔽
+        if (author && isAuthorBlocked(author)) {
+            console.log(`✅ 匹配作者屏蔽: ${author}`);
+            filterStats.authorsBlocked++;
+            return true;
+        }
+
+        // 3. 检查时间过滤
+        if (video.create_time) {
+            const publishTime = new Date(video.create_time * 1000);
+            if (shouldFilterByTime(publishTime)) {
+                console.log(`✅ 匹配时间过滤: ${publishTime.toLocaleDateString()}`);
+                filterStats.timeFiltered++;
+                return true;
+            }
+        }
+
+        // 4. 检查关键词匹配
+        const fullText = `${author} ${desc}`;
+        const matchedKeyword = isTextMatched(fullText);
+
+        if (matchedKeyword) {
+            console.log(`✅ 匹配关键词: ${matchedKeyword}`);
+            return true;
+        }
+
+        // 5. 检查标签匹配
+        for (const tag of tags) {
+            const tagText = `#${tag.hashtag_name || ''}`;
+            if (isTextMatched(tagText)) {
+                console.log(`✅ 匹配标签: ${tagText}`);
+                return true;
+            }
+        }
+
+        // 6. 检查直播内容
+        if (blockLive && video.aweme_type === 13) {
+            console.log(`✅ 匹配直播屏蔽`);
+            filterStats.liveBlocked++;
+            return true;
+        }
+
+        return false;
+    }
+
+    // 当所有视频都被过滤时，请求更多视频
+    async function requestMoreVideos(originalUrl, originalOptions, fetchFunction, retryCount = 0) {
+        const maxRetries = 3;
+
+        if (retryCount >= maxRetries) {
+            console.log('⚠️ 达到最大重试次数，返回空列表');
+            return new Response(JSON.stringify({
+                aweme_list: [],
+                has_more: 0
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
+        console.log(`🔄 请求更多视频 (重试 ${retryCount + 1}/${maxRetries})`);
+
+        try {
+            // 修改请求参数以获取更多视频
+            const url = new URL(originalUrl);
+            const count = parseInt(url.searchParams.get('count') || '10');
+            url.searchParams.set('count', String(Math.min(count * 2, 30))); // 增加请求数量
+
+            const response = await fetchFunction(url.toString(), originalOptions);
+            const data = await response.json();
+
+            const filteredData = await filterVideoFeedData(data);
+
+            // 如果还是没有视频，继续递归请求
+            if (filteredData.aweme_list.length === 0 && data.has_more) {
+                return requestMoreVideos(url.toString(), originalOptions, fetchFunction, retryCount + 1);
+            }
+
+            return new Response(JSON.stringify(filteredData), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        } catch (error) {
+            console.error('❌ 请求更多视频失败:', error);
+            return new Response(JSON.stringify({
+                aweme_list: [],
+                has_more: 0
+            }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+    }
+
+    // DOM级别的二次防御（以防API拦截失败）
+    function observeAndHideFilteredVideos() {
+        const observer = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                if (mutation.addedNodes.length > 0) {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.nodeType === 1) {
+                            // 检查是否是视频容器
+                            if (node.hasAttribute && node.hasAttribute('data-e2e-vid')) {
+                                const videoId = node.getAttribute('data-e2e-vid');
+
+                                // 如果在过滤列表中，立即隐藏
+                                if (videoFilterState.filteredVideos.has(videoId)) {
+                                    console.log(`🚫 DOM防御: 隐藏已过滤视频 ${videoId}`);
+                                    node.style.display = 'none';
+                                    node.remove(); // 直接移除节点
+
+                                    // 触发加载下一个视频
+                                    setTimeout(() => {
+                                        triggerNextVideoLoad();
+                                    }, 100);
+                                } else {
+                                    // 实时检查新出现的视频
+                                    setTimeout(() => {
+                                        checkNewVideoNode(node);
+                                    }, 300);
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
+        console.log('✅ DOM防御观察器已启动');
+    }
+
+    // 检查新出现的视频节点
+    function checkNewVideoNode(node) {
+        const videoId = node.getAttribute('data-e2e-vid');
+        if (!videoId) return;
+
+        // 如果已经在过滤列表中，跳过
+        if (videoFilterState.filteredVideos.has(videoId)) return;
+
+        // 获取视频信息
+        const titleElement = node.querySelector('.title[data-e2e="video-desc"]');
+        const authorElement = node.querySelector('.account-name-text');
+
+        const title = titleElement ? (titleElement.innerText || titleElement.textContent || '') : '';
+        const author = authorElement ? (authorElement.innerText || authorElement.textContent || '') : '';
+
+        const fullText = `${author} ${title}`;
+
+        // 检查是否应该过滤
+        let shouldFilter = false;
+        let filterReason = '';
+
+        // 检查作者屏蔽
+        if (author && isAuthorBlocked(author)) {
+            shouldFilter = true;
+            filterReason = `作者: ${author}`;
+            filterStats.authorsBlocked++;
+        }
+        // 检查关键词
+        else {
+            const matchedKeyword = isTextMatched(fullText);
+            if (matchedKeyword) {
+                shouldFilter = true;
+                filterReason = `关键词: ${matchedKeyword}`;
+            }
+        }
+
+        if (shouldFilter) {
+            console.log(`🚫 DOM防御检测到需要过滤的视频: ${filterReason}`);
+
+            videoFilterState.filteredVideos.add(videoId);
+            node.style.display = 'none';
+            node.remove();
+
+            filterStats.total++;
+
+            // 触发加载下一个视频
+            setTimeout(() => {
+                triggerNextVideoLoad();
+            }, 100);
+        }
+    }
+
+    // 触发加载下一个视频
+    function triggerNextVideoLoad() {
+        // 方法1: 模拟滚动
+        const scrollEvent = new Event('scroll', { bubbles: true });
+        window.dispatchEvent(scrollEvent);
+
+        // 方法2: 模拟按键
+        const keyEvent = new KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            code: 'ArrowDown',
+            keyCode: 40,
+            bubbles: true
+        });
+        document.dispatchEvent(keyEvent);
+
+        console.log('🔄 触发加载下一个视频');
+    }
+
+    // 初始化网络拦截过滤系统
+    function initNetworkInterceptFilter() {
+        console.log('🚀 初始化网络拦截过滤系统');
+
+        // 安装拦截器
+        interceptFetch();
+        interceptXHR();
+
+        // 启动DOM防御
+        observeAndHideFilteredVideos();
+
+        console.log('✅ 网络拦截过滤系统已启动');
+    }
+
+    // 推荐页检查函数
+    function checkAndFilterRecommendPage() {
+        // 推荐页现在由网络拦截处理，这里只做兜底检查
+        if (!window.location.href.includes('recommend=1')) return;
+
+        console.log('🔍 推荐页兜底检查');
+
+        // 检查当前可见的视频
+        const activeVideo = document.querySelector('[data-e2e="feed-active-video"]');
+        if (activeVideo) {
+            const videoId = activeVideo.getAttribute('data-e2e-vid');
+
+            if (videoId && videoFilterState.filteredVideos.has(videoId)) {
+                console.log(`🚫 兜底检查: 发现已过滤视频 ${videoId}，触发切换`);
+                activeVideo.style.display = 'none';
+                activeVideo.remove();
+
+                setTimeout(() => {
+                    triggerNextVideoLoad();
+                }, 100);
+            }
+        }
+    }
+
+    // 清理过滤状态（当关键词或屏蔽列表更新时调用）
+    function clearFilterState() {
+        videoFilterState.filteredVideos.clear();
+        videoFilterState.videoCache.clear();
+        console.log('🔄 已清理过滤状态');
+    }
+
+    // 在保存关键词或屏蔽列表时调用清理函数
+    function onFilterConfigUpdated() {
+        clearFilterState();
+        console.log('🔄 过滤配置已更新，重新开始过滤');
     }
 
     // 防抖版本的广告移除函数
