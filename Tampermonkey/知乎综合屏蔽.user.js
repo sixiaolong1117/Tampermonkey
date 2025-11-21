@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.12
+// @version      0.13
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -12,7 +12,6 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
-// @grant        GM_notification
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
@@ -419,215 +418,256 @@
 
     // WebDAV同步函数
     function syncToWebDAV(reason = '手动同步') {
-        if (!webdavConfig.enabled || !webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
+        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
             console.log('❌ 请先在脚本设置中配置 WebDAV 信息！');
+            return Promise.resolve(false);
+        }
+
+        const { folder, file } = getWebDAVUrls();
+
+        return new Promise(resolve => {
+            // 确保目录
+            webdavRequest({ method: 'PROPFIND', url: folder }, res => {
+                if (res.status === 404) {
+                    webdavRequest({ method: 'MKCOL', url: folder }, () => proceed());
+                } else {
+                    proceed();
+                }
+            });
+
+            function proceed() {
+                // 读取远端
+                webdavRequest({ method: 'GET', url: file }, res => {
+                    let remote = {};
+                    if (res.status === 200) {
+                        try { remote = JSON.parse(res.responseText) || {}; } catch { }
+                    }
+
+                    // 合并 + 上传
+                    const data = createConfigObject(remote, reason);
+                    webdavRequest({
+                        method: 'PUT',
+                        url: file,
+                        data: JSON.stringify(data, null, 2),
+                        headers: {
+                            'Content-Type': 'application/json; charset=utf-8',
+                            auth: getWebDAVUrls().auth
+                        }
+                    }, putRes => {
+                        if (putRes.status >= 200 && putRes.status < 300) {
+                            updateLastSync(data.lastModified);
+                            console.log('✅ WebDAV 增量同步成功');
+                            resolve(true);
+                        } else {
+                            console.log('❌ 上传失败:', putRes.status);
+                            resolve(false);
+                        }
+                    });
+                });
+            }
+        });
+    }
+
+    // 版本比较函数
+    function compareVersion(a, b) {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const na = pa[i] || 0, nb = pb[i] || 0;
+            if (na > nb) return 1;
+            if (na < nb) return -1;
+        }
+        return 0;
+    }
+
+    // WebDAV URL 构建
+    function getWebDAVUrls() {
+        let base = webdavConfig.url;
+        if (!base.endsWith('/')) base += '/';
+        const folder = base + 'ZhihuGeneralBlock/';
+        const file = folder + 'zhihu_blocklist.json';
+        const auth = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
+        return { base, folder, file, auth };
+    }
+
+    // GM_xmlhttpRequest 封装
+    function webdavRequest({ method, url, data, headers = {}, responseType }, callback) {
+        GM_xmlhttpRequest({
+            method,
+            url,
+            data,
+            headers: { 'Authorization': headers.auth || getWebDAVUrls().auth, ...headers },
+            responseType: responseType || 'text',
+            onload: res => callback(res),
+            onerror: () => callback({ status: 0, responseText: '' })
+        });
+    }
+
+    // lastSync 更新
+    function updateLastSync(timestamp) {
+        webdavConfig.lastSync = timestamp;
+        GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
+    }
+
+    // 配置对象构造
+    function createConfigObject(base = {}, reason = '手动同步') {
+        return {
+            ...base,
+            keywords: keywords,
+            blockedUsers: blockedUsers,
+            timeFilterDays: timeFilterDays,
+            lastModified: Date.now(),
+            reason,
+            timestamp: new Date().toISOString(),
+            _script_version: SCRIPT_VERSION
+        };
+    }
+
+    // 版本检查与自动升级
+    function checkAndUpgradeVersion(remoteData) {
+        if (!remoteData._script_version || remoteData._script_version === SCRIPT_VERSION) {
+            console.log(`✅ 云端配置版本匹配：v${SCRIPT_VERSION}`);
             return;
         }
 
-        // ✅ 自动补全 URL 末尾斜杠
-        let baseUrl = webdavConfig.url;
-        if (!baseUrl.endsWith('/')) baseUrl += '/';
-        const folderUrl = baseUrl + 'ZhihuGeneralBlock/';
-        const fileUrl = folderUrl + 'zhihu_blocklist.json';
-        const authHeader = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
+        const remoteVer = remoteData._script_version;
+        const cmp = compareVersion(remoteVer, SCRIPT_VERSION);
 
-        // Step 1: 检查目录
-        GM_xmlhttpRequest({
-            method: 'PROPFIND',
-            url: folderUrl,
-            headers: { 'Authorization': authHeader },
-            onload: function (res) {
-                if (res.status === 404) {
-                    createFolderAndUpload();
-                } else {
-                    readThenMergeAndUpload();
-                }
-            },
-            onerror: () => console.log('❌ 检查目录失败')
-        });
+        if (cmp > 0) {
+            const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+            showNotification(msg);
+            console.log(msg);
+        } else if (cmp < 0) {
+            console.log(`⬆️ 云端配置 v${remoteVer} 较旧，自动升级中...`);
+            if (!window._zhihu_version_upgrading) {
+                window._zhihu_version_upgrading = true;
+                setTimeout(() => {
+                    syncToWebDAV('自动版本升级')
+                        .then(() => {
+                            const msg = `✅ 云端配置已升级：v${remoteVer} → v${SCRIPT_VERSION}`;
+                            console.log(msg);
+                            showNotification(msg);
+                        })
+                        .catch(() => showNotification('❌ 自动升级失败'))
+                        .finally(() => window._zhihu_version_upgrading = false);
+                }, 1500);
+            }
+        }
+    }
 
-        // 创建目录
-        function createFolderAndUpload() {
-            GM_xmlhttpRequest({
-                method: 'MKCOL',
-                url: folderUrl,
-                headers: { 'Authorization': authHeader },
-                onload: () => readThenMergeAndUpload(),
-                onerror: () => console.log('❌ 创建目录失败')
-            });
+    // 合并字段
+    function mergeFields(data) {
+        let updated = false;
+
+        if (Array.isArray(data.keywords)) {
+            keywords = data.keywords;
+            GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+            updated = true;
+        }
+        if (Array.isArray(data.blockedUsers)) {
+            blockedUsers = data.blockedUsers;
+            GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
+            updated = true;
+        }
+        if (typeof data.timeFilterDays === 'number') {
+            timeFilterDays = data.timeFilterDays;
+            GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
+            updated = true;
         }
 
-        // 核心：先 GET 远端 → 合并本地变更 → 再 PUT
-        function readThenMergeAndUpload() {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: fileUrl,
-                headers: { 'Authorization': authHeader },
-                onload: function (getRes) {
-                    let remoteData = {};
-                    if (getRes.status === 200) {
-                        try { remoteData = JSON.parse(getRes.responseText) || {}; } catch (e) { }
-                    } else if (getRes.status !== 404) {
-                        console.log('❌ 读取远端文件失败:', getRes.status);
-                    }
-
-                    // 合并：保留远端所有字段，只更新当前版本所识别的
-                    const mergedData = {
-                        ...remoteData,  // 保留所有字段
-                        keywords: keywords,
-                        blockedUsers: blockedUsers,
-                        timeFilterDays: timeFilterDays,
-                        lastModified: Date.now(),
-                        reason: reason,
-                        timestamp: new Date().toISOString(),
-                        _script_version: SCRIPT_VERSION  // 版本标记
-                    };
-
-                    // 上传合并后的数据
-                    GM_xmlhttpRequest({
-                        method: 'PUT',
-                        url: fileUrl,
-                        data: JSON.stringify(mergedData, null, 2),
-                        headers: {
-                            'Authorization': authHeader,
-                            'Content-Type': 'application/json; charset=utf-8'
-                        },
-                        onload: function (putRes) {
-                            if (putRes.status >= 200 && putRes.status < 300) {
-                                console.log('✅ WebDAV 增量同步成功');
-                                webdavConfig.lastSync = mergedData.lastModified;
-                                GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
-                            } else {
-                                console.log('❌ 上传失败:', putRes.status);
-                            }
-                        },
-                        onerror: () => console.log('❌ 上传请求错误')
-                    });
-                },
-                onerror: () => console.log('❌ 读取远端文件失败')
-            });
-        }
+        return updated;
     }
 
     // 从WebDAV拉取数据
     function syncFromWebDAV() {
-        if (!webdavConfig.enabled || !webdavConfig.url) {
-            return Promise.resolve(false);
-        }
+        if (!webdavConfig.enabled || !webdavConfig.url) return Promise.resolve(false);
 
-        let baseUrl = webdavConfig.url;
-        if (!baseUrl.endsWith('/')) baseUrl += '/';
-        const fileUrl = baseUrl + 'ZhihuGeneralBlock/zhihu_blocklist.json';
+        const { file } = getWebDAVUrls();
 
-        return new Promise((resolve) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: fileUrl,
-                responseType: 'json',
-                headers: {
-                    'Authorization': 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password)
-                },
-                onload: function (response) {
-                    if (response.status === 200) {
-                        try {
-                            const remoteData = response.response || {};
-
-                            // 只有远程时间戳更新才应用
-                            const localTimestamp = webdavConfig.lastSync || 0;
-                            const remoteTimestamp = remoteData.lastModified || 0;
-
-                            // 版本检查
-                            if (remoteData._script_version && remoteData._script_version !== SCRIPT_VERSION) {
-                                const remoteVer = remoteData._script_version;
-                                const localVer = SCRIPT_VERSION;
-
-                                const cmp = compareVersion(remoteVer, localVer);
-                                if (cmp > 0) {
-                                    showNotification(`☁️ 云端配置来自 v${remoteVer}（高于 💻 本地 v${localVer}），🚨 请升级脚本！`);
-                                } else if (cmp < 0) {
-                                    console.log(`☁️ 云端配置 v${remoteVer} 较旧，已由 💻 本地 v${localVer} 适配`);
-                                    showNotification(`已加载 ☁️ 云端旧版配置（v${remoteVer}），💻 本地脚本 v${localVer} 已适配`);
-                                }
-                            }
-
-                            function compareVersion(a, b) {
-                                const pa = a.split('.').map(Number);
-                                const pb = b.split('.').map(Number);
-                                for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-                                    const na = pa[i] || 0, nb = pb[i] || 0;
-                                    if (na > nb) return 1;
-                                    if (na < nb) return -1;
-                                }
-                                return 0;
-                            }
-
-                            if (remoteTimestamp <= localTimestamp) {
-                                console.log('✅ 本地数据已是最新，无需同步');
-                                resolve(false);
-                                return;
-                            }
-
-                            // 增量合并：只更新我们认识的字段
-                            let updated = false;
-
-                            if (Array.isArray(remoteData.keywords)) {
-                                keywords = remoteData.keywords;
-                                GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
-                                updated = true;
-                            }
-                            if (Array.isArray(remoteData.blockedUsers)) {
-                                blockedUsers = remoteData.blockedUsers;
-                                GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
-                                updated = true;
-                            }
-                            if (typeof remoteData.timeFilterDays === 'number') {
-                                timeFilterDays = remoteData.timeFilterDays;
-                                GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
-                                updated = true;
-                            }
-
-                            if (updated) {
-                                webdavConfig.lastSync = remoteTimestamp;
-                                GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
-                                console.log('✅ 从 WebDAV 增量同步成功');
-                                showNotification('✅ 已从云端同步最新数据');
-                                resolve(true);
-                            } else {
-                                console.log('➡️ 无有效字段更新，跳过同步');
-                                resolve(false);
-                            }
-                        } catch (e) {
-                            console.error('❌ 解析远程数据失败:', e);
-                            resolve(false);
-                        }
-                    } else if (response.status === 404) {
-                        console.log('⬆️ 远程文件不存在，上传本地数据初始化');
-                        syncToWebDAV('🔄 初始化同步').then(() => resolve(false));
+        return new Promise(resolve => {
+            webdavRequest({ method: 'GET', url: file, responseType: 'json' }, res => {
+                if (res.status !== 200) {
+                    if (res.status === 404) {
+                        console.log('🔄 文件不存在，初始化上传');
+                        syncToWebDAV('初始化同步').then(() => resolve(false));
                     } else {
-                        console.error('❌ 拉取失败:', response.status);
+                        console.error('❌ 拉取失败:', res.status);
                         resolve(false);
                     }
-                },
-                onerror: function (err) {
-                    console.error('❌ 网络错误:', err);
+                    return;
+                }
+
+                let data;
+                try { data = res.response || {}; } catch { data = {}; }
+
+                const localTS = webdavConfig.lastSync || 0;
+                const remoteTS = data.lastModified || 0;
+                const remoteVer = data._script_version;
+
+                // 1. 时间戳判断：是否需要下载
+                const shouldDownload = remoteTS > localTS;
+                // 2. 版本判断：是否需要上传（即使时间戳最新）
+                const shouldUpload = remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) < 0;
+
+                let finalResolved = false;
+
+                // === 情况1：远端时间更新 → 下载合并 ===
+                if (shouldDownload) {
+                    const updated = mergeFields(data);
+                    if (updated) {
+                        updateLastSync(remoteTS);
+                        const msg = '✅ 时间戳更新：已从云端同步数据';
+                        console.log(msg);
+                        showNotification(msg);
+                        checkAndUpgradeVersion(data); // 可能触发上传
+                        resolve(true);
+                        finalResolved = true;
+                    }
+                }
+
+                // === 情况2：远端版本落后 → 强制上传（即使时间戳最新）===
+                if (shouldUpload && !finalResolved) {
+                    console.log(`⬆️ 远端版本 v${remoteVer} 落后，强制升级`);
+                    syncToWebDAV('强制版本升级')
+                        .then(success => {
+                            if (success) {
+                                showNotification(`✅ 远端配置已强制升级至 v${SCRIPT_VERSION}`);
+                                updateLastSync(Date.now());
+                            }
+                            resolve(success);
+                        });
+                    return;
+                }
+
+                // === 情况3：两者都不需要 ===
+                if (!finalResolved) {
+                    console.log('✅ 本地已是最新，无需操作');
+                    if (remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) > 0) {
+                        const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+                        showNotification(msg);
+                        console.log(msg);
+                    }
                     resolve(false);
                 }
             });
         });
     }
 
+    // 统一保存函数
     function saveAllSettingsAndSync(newKeywords, newUsers, reason = '手动修改') {
-        // 更新全局变量
-        keywords = Array.isArray(newKeywords) ? newKeywords : [];
-        blockedUsers = Array.isArray(newUsers) ? newUsers : [];
+        // 类型检查
+        keywords = ensureArray(newKeywords, keywords);
+        blockedUsers = ensureArray(newUsers, blockedUsers);
 
         // 本地保存
         GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
         GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
+        GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
 
         console.log(`📦 已保存到本地 (${reason})：`, {
             keywordsCount: keywords.length,
-            usersCount: blockedUsers.length
+            usersCount: blockedUsers.length,
+            timeFilterDays: timeFilterDays
         });
 
         // WebDAV同步
@@ -636,6 +676,18 @@
         }
 
         return true;
+    }
+
+    // 元素处理标记
+    function markAsProcessed(element, type) {
+        if (!element.dataset.blockProcessed) {
+            element.dataset.blockProcessed = '';
+        }
+        element.dataset.blockProcessed += type + ',';
+    }
+
+    function isProcessed(element, type) {
+        return element.dataset.blockProcessed && element.dataset.blockProcessed.includes(type + ',');
     }
 
     // 保存关键词函数
@@ -1057,7 +1109,8 @@
         const contentItems = document.querySelectorAll('.ContentItem');
 
         contentItems.forEach(contentItem => {
-            if (contentItem.classList.contains('custom-hidden')) {
+            // ✅ 跳过已处理的元素
+            if (contentItem.classList.contains('custom-hidden') || isProcessed(contentItem, 'main')) {
                 return;
             }
 
@@ -1065,6 +1118,7 @@
             const authorName = getAuthorNameFromElement(contentItem);
             if (authorName && isUserBlocked(authorName)) {
                 contentItem.classList.add('custom-hidden');
+                markAsProcessed(contentItem, 'main'); // 标记已处理
 
                 // 根据设置决定是否显示占位块
                 if (showPlaceholder) {
@@ -1084,6 +1138,7 @@
             // 时间屏蔽
             if (isAnswerTooOld(contentItem)) {
                 contentItem.classList.add('custom-hidden');
+                markAsProcessed(contentItem, 'main');
 
                 // 根据设置决定是否显示占位块
                 if (showPlaceholder) {
@@ -1108,6 +1163,7 @@
 
                 if (matchResult) {
                     contentItem.classList.add('custom-hidden');
+                    markAsProcessed(contentItem, 'main');
                     let displayKeyword = matchResult.keyword;
                     let matchType = matchResult.type === 'regex' ? '正则表达式' : '普通关键词';
 
@@ -1133,39 +1189,30 @@
 
     // 显示通知
     function showNotification(message, timeout = 3000) {
-        // 尝试使用GM_notification
-        if (typeof GM_notification === 'function') {
-            GM_notification({
-                text: message,
-                timeout: timeout,
-                title: '知乎关键词屏蔽'
-            });
-        } else {
-            // 备用方案：在页面右上角显示临时提示
-            const notification = document.createElement('div');
-            notification.style.cssText = `
-                position: fixed;
-                top: 20px;
-                right: 20px;
-                background: #4CAF50;
-                color: white;
-                padding: 12px 20px;
-                border-radius: 4px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                z-index: 10001;
-                font-size: 14px;
-                max-width: 300px;
-                word-break: break-all;
-            `;
-            notification.textContent = message;
-            document.body.appendChild(notification);
+        // 使用页面内元素显示通知，而不是系统通知
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: #4CAF50;
+        color: white;
+        padding: 12px 20px;
+        border-radius: 4px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        z-index: 10001;
+        font-size: 14px;
+        max-width: 300px;
+        word-break: break-all;
+    `;
+        notification.textContent = message;
+        document.body.appendChild(notification);
 
-            setTimeout(() => {
-                if (notification.parentNode) {
-                    notification.parentNode.removeChild(notification);
-                }
-            }, timeout);
-        }
+        setTimeout(() => {
+            if (notification.parentNode) {
+                notification.parentNode.removeChild(notification);
+            }
+        }, timeout);
     }
 
     // 处理快捷键添加屏蔽词
@@ -1475,7 +1522,7 @@
         document.body.removeChild(trigger);
     }
 
-    // 新增：处理问题详情页的回答屏蔽
+    // 处理问题详情页的回答屏蔽
     function hideAnswersInQuestionPage() {
         // 只在问题详情页执行
         if (!window.location.href.includes('/question/')) {
@@ -1522,7 +1569,7 @@
         });
     }
 
-    // 新增：为问题详情页的回答添加屏蔽按钮
+    // 为问题详情页的回答添加屏蔽按钮
     function addBlockButtonToAnswer(answerItem, authorName) {
         // 如果设置为不显示按钮，直接返回
         if (!showBlockButton) {
@@ -1580,6 +1627,28 @@
         authorInfo.appendChild(blockUserBtn);
     }
 
+    // 强类型检查辅助函数
+    function ensureArray(value, fallback = []) {
+        if (Array.isArray(value)) {
+            return value;
+        }
+
+        // 如果是字符串且看起来像是理由/描述，返回fallback
+        if (typeof value === 'string' && (value.includes('屏蔽') || value.includes('快捷键添加'))) {
+            console.warn('检测到错误传递的字符串参数，使用fallback:', value);
+            return Array.isArray(fallback) ? fallback : [];
+        }
+
+        // 如果是字符串，尝试按行分割
+        if (typeof value === 'string') {
+            return value.split('\n').filter(line => line.trim().length > 0);
+        }
+
+        // 其他情况返回空数组
+        console.warn('无法修复的数据类型，返回空数组:', typeof value, value);
+        return [];
+    }
+
     // 注册油猴菜单命令
     GM_registerMenuCommand('管理屏蔽设置', showKeywordManager);
     // GM_registerMenuCommand('管理屏蔽用户', showUserBlockManager);
@@ -1589,6 +1658,14 @@
 
     // 初始化
     function init() {
+        // 初始化时进行全局类型检查
+        keywords = ensureArray(keywords, DEFAULT_KEYWORDS);
+        blockedUsers = ensureArray(blockedUsers, []);
+
+        // 保存修复后的数据
+        GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
+        GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
+
         // 输出脚本启动信息
         logScriptInfo();
 
@@ -1597,16 +1674,7 @@
 
         // 在所有页面都执行基本功能，只在特定页面限制某些功能
         const isQuestionPage = window.location.href.includes('/question/');
-
-        // 页面加载时执行一次
-        hideQuestions();
-
-        // 监听DOM变化（使用防抖）
-        const observer = new MutationObserver(debouncedHide);
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        const isPeoplePage = window.location.href.includes('/people/');
 
         // 页面加载时执行一次WebDAV同步检查
         if (webdavConfig.enabled) {
@@ -1617,6 +1685,44 @@
                 }
             });
         }
+
+        // 页面加载时执行一次
+        hideQuestions();
+
+        // ✅ 优化后的 MutationObserver - 只监听必要的DOM变化
+        const observer = new MutationObserver((mutations) => {
+            let shouldProcess = false;
+
+            for (const mutation of mutations) {
+                // 只处理新增的节点
+                if (mutation.addedNodes.length > 0) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType === 1) { // 元素节点
+                            // 检查是否是知乎内容节点
+                            if (node.classList && (
+                                node.classList.contains('ContentItem') ||
+                                node.querySelector('.ContentItem')
+                            )) {
+                                shouldProcess = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (shouldProcess) break;
+            }
+
+            if (shouldProcess) {
+                debouncedHide();
+            }
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: false, // 不监听属性变化
+            characterData: false // 不监听文本变化
+        });
 
         // 添加全局函数以便在控制台手动查看统计
         window.getHiddenStats = function () {
@@ -1647,7 +1753,7 @@
             `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
             `💡 功能: 点击问题旁的"屏蔽"按钮快速屏蔽问题\n` +
             `💡 功能: 点击"屏蔽作者"按钮快速屏蔽用户\n` +
-            `💡 菜单: 使用"管理屏蔽设置"统一管理关键词和用户屏蔽\n` +  // 更新这一行
+            `💡 菜单: 使用"管理屏蔽设置"统一管理关键词和用户屏蔽\n` +
             `💡 当前页面: ${isQuestionPage ? '问题详情页' : (isPeoplePage ? '用户主页' : '首页或其他页面')}\n` +
             `💡 时间过滤: ${(isQuestionPage || isPeoplePage) ? '禁用' : (timeFilterDays > 0 ? timeFilterDays + '天前' : '禁用')}`
         );
