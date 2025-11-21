@@ -1,13 +1,12 @@
 // ==UserScript==
-// @name         X 翻译姬
+// @name         Threads 翻译姬
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.3
-// @description  将推文翻译为简体中文，并在下方显示
+// @version      0.1
+// @description  将Threads帖子翻译为简体中文，并在下方显示
 // @license      MIT
-// @icon         https://x.com/favicon.ico
+// @icon         https://threads.com/favicon.ico
 // @author       SI Xiaolong
-// @match        https://twitter.com/*
-// @match        https://x.com/*
+// @match        https://www.threads.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
@@ -69,7 +68,7 @@
         'vi': '越南语'
     };
 
-    // 检测当前主题（深色或浅色）
+    // 检测当前主题（Threads通常是白色或深色）
     function detectTheme() {
         const bgColor = window.getComputedStyle(document.body).backgroundColor;
         const rgb = bgColor.match(/\d+/g);
@@ -77,7 +76,7 @@
             const brightness = (parseInt(rgb[0]) + parseInt(rgb[1]) + parseInt(rgb[2])) / 3;
             return brightness > 128 ? 'light' : 'dark';
         }
-        return 'dark';
+        return 'light';
     }
 
     // 获取主题相关的颜色
@@ -86,21 +85,21 @@
 
         if (theme === 'light') {
             return {
-                background: 'rgba(247, 249, 249, 0.8)',
-                loadingText: '#536471',
-                translatedText: '#0f1419',
-                errorText: '#f4212e',
-                headerText: '#536471',
-                border: 'rgba(207, 217, 222, 0.3)'
+                background: 'rgba(243, 245, 247, 0.8)',
+                loadingText: '#999999',
+                translatedText: '#000000',
+                errorText: '#e74c3c',
+                headerText: '#666666',
+                border: 'rgba(219, 219, 219, 0.5)'
             };
         } else {
             return {
-                background: 'rgba(32, 35, 39, 0.8)',
-                loadingText: '#8b949e',
-                translatedText: '#e7e9ea',
+                background: 'rgba(38, 38, 38, 0.8)',
+                loadingText: '#a8a8a8',
+                translatedText: '#f5f5f5',
                 errorText: '#ff6b6b',
-                headerText: '#8b949e',
-                border: 'rgba(47, 51, 54, 0.3)'
+                headerText: '#a8a8a8',
+                border: 'rgba(54, 54, 54, 0.5)'
             };
         }
     }
@@ -226,7 +225,7 @@
         const protectedElements = [];
         let protectedText = text;
 
-        // 保护 URL（优先处理，因为URL可能包含其他特殊字符）
+        // 保护 URL
         protectedText = protectedText.replace(/https?:\/\/[^\s]+/g, (match) => {
             const placeholder = `__URL_${protectedElements.length}__`;
             protectedElements.push(match);
@@ -267,12 +266,12 @@
         return restoredText;
     }
 
-    // 提取纯文本内容（不提取链接信息）
+    // 提取Threads帖子的纯文本内容
     function extractPlainText(element) {
         let textParts = [];
 
         function traverse(node) {
-            // 跳过某些不需要翻译的元素（如按钮、SVG等）
+            // 跳过不需要翻译的元素
             if (node.nodeType === Node.ELEMENT_NODE) {
                 const tagName = node.tagName.toLowerCase();
                 if (tagName === 'button' || tagName === 'svg' || tagName === 'path') {
@@ -285,12 +284,10 @@
                     const text = child.textContent.trim();
                     if (text) textParts.push(text);
                 } else if (child.nodeType === Node.ELEMENT_NODE) {
-                    // 对于链接元素，直接提取文本内容，保持位置
                     if (child.tagName === 'A') {
                         const linkText = child.textContent.trim();
                         if (linkText) textParts.push(linkText);
                     } else {
-                        // 递归处理其他元素
                         traverse(child);
                     }
                 }
@@ -308,25 +305,25 @@
         const colors = getThemeColors();
 
         const box = document.createElement('div');
-        box.className = 'x-translator-box';
+        box.className = 'threads-translator-box';
         box.style.cssText = `
-            margin-top: 12px;
-            padding: 12px 16px;
+            margin-top: 8px;
+            padding: 10px 14px;
             background-color: ${colors.background};
             border: 1px solid ${colors.border};
-            border-radius: 12px;
-            font-size: 15px;
-            line-height: 1.5;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.4;
             transition: background-color 0.2s ease, border-color 0.2s ease;
         `;
 
         // 创建标题
         const header = document.createElement('div');
-        header.className = 'x-translator-header';
+        header.className = 'threads-translator-header';
         header.style.cssText = `
-            font-size: 13px;
+            font-size: 12px;
             color: ${colors.headerText};
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             font-weight: 500;
             transition: color 0.2s ease;
         `;
@@ -334,7 +331,7 @@
 
         // 创建加载中的内容容器
         const content = document.createElement('div');
-        content.className = 'x-translator-content';
+        content.className = 'threads-translator-content';
         content.style.cssText = `
             color: ${colors.loadingText};
             white-space: pre-wrap;
@@ -352,7 +349,7 @@
     // 更新翻译框内容（成功）
     function updateTranslationBox(box, translatedText) {
         const colors = getThemeColors();
-        const content = box.querySelector('.x-translator-content');
+        const content = box.querySelector('.threads-translator-content');
 
         content.style.color = colors.translatedText;
         content.textContent = translatedText;
@@ -361,7 +358,7 @@
     // 更新翻译框内容（失败）
     function updateTranslationBoxError(box, errorMessage) {
         const colors = getThemeColors();
-        const content = box.querySelector('.x-translator-content');
+        const content = box.querySelector('.threads-translator-content');
 
         content.style.color = colors.errorText;
         content.textContent = `❌ 翻译失败: ${errorMessage}`;
@@ -370,18 +367,18 @@
     // 更新所有翻译框的主题
     function updateAllBoxesTheme() {
         const colors = getThemeColors();
-        const boxes = document.querySelectorAll('.x-translator-box');
+        const boxes = document.querySelectorAll('.threads-translator-box');
 
         boxes.forEach(box => {
             box.style.backgroundColor = colors.background;
             box.style.borderColor = colors.border;
 
-            const header = box.querySelector('.x-translator-header');
+            const header = box.querySelector('.threads-translator-header');
             if (header) {
                 header.style.color = colors.headerText;
             }
 
-            const content = box.querySelector('.x-translator-content');
+            const content = box.querySelector('.threads-translator-content');
             if (content) {
                 const text = content.textContent;
                 if (text === '翻译中...') {
@@ -396,7 +393,7 @@
     }
 
     // 处理翻译
-    async function processTranslation(element, isTrend = false) {
+    async function processTranslation(element) {
         // 如果已经翻译过，跳过
         if (translatedElements.has(element)) {
             return;
@@ -408,27 +405,20 @@
         // 提取纯文本内容
         const originalText = extractPlainText(element);
 
-        if (originalText.length === 0) {
+        if (originalText.length === 0 || originalText.length < 2) {
             return;
-        }
-
-        // 对于热搜，进行额外过滤
-        if (isTrend) {
-            // 排除"xx的趋势"这类描述性文字
-            if (originalText.match(/的趋势|条推文|Trending|posts?$/i)) {
-                return;
-            }
-            // 如果文本太短（少于2个字符），也跳过
-            if (originalText.length < 2) {
-                return;
-            }
         }
 
         // 创建占位框并立即插入到页面
         const placeholderBox = createPlaceholderBox();
-        const parentContainer = element.parentElement;
-        if (parentContainer) {
-            parentContainer.insertBefore(placeholderBox, element.nextSibling);
+        
+        // 找到帖子文本的父容器
+        const textContainer = element.closest('.x1a6qonq, .xqcrz7y');
+        if (textContainer && textContainer.parentElement) {
+            textContainer.parentElement.insertBefore(placeholderBox, textContainer.nextSibling);
+        } else {
+            // 备用方案：直接插入到元素后面
+            element.parentElement.insertBefore(placeholderBox, element.nextSibling);
         }
 
         try {
@@ -459,61 +449,28 @@
         }
     }
 
-    // 查找并处理所有推文
-    function findAndTranslateTweets() {
-        const tweetDivs = document.querySelectorAll('[data-testid="tweetText"]');
-        tweetDivs.forEach(div => {
-            processTranslation(div, false);
-        });
-    }
-
-    // 查找并处理用户简介
-    function findAndTranslateUserDescription() {
-        const userDescriptions = document.querySelectorAll('[data-testid="UserDescription"]');
-        userDescriptions.forEach(div => {
-            processTranslation(div, false);
-        });
-    }
-
-    // 查找并处理热搜趋势（优化版）
-    function findAndTranslateTrends() {
-        const trends = document.querySelectorAll('[data-testid="trend"]');
-        trends.forEach(trendDiv => {
-            const divs = trendDiv.querySelectorAll('div[dir="ltr"]');
-            let trendTextElement = null;
-
-            for (let div of divs) {
-                const text = div.textContent.trim();
-                const classList = div.className || '';
-
-                if (!text) continue;
-                if (text.match(/趋势|Trending/i)) continue;
-                if (text.match(/条帖子|posts?$/i)) continue;
-                if (text.match(/^[\d,]+$/)) continue;
-
-                if (classList.includes('r-b88u0q') ||
-                    (!trendTextElement && text.length > 0)) {
-                    trendTextElement = div;
-                    break;
+    // 查找并处理所有Threads帖子
+    function findAndTranslateThreads() {
+        // 查找包含帖子文本的容器
+        // 根据提供的HTML结构，帖子文本在 .x1a6qonq 类的 span 元素中
+        const postTextContainers = document.querySelectorAll('.x1a6qonq span[dir="auto"]');
+        
+        postTextContainers.forEach(span => {
+            // 确保这是主要的帖子文本，而不是其他UI元素
+            const text = span.textContent.trim();
+            if (text && text.length > 2) {
+                // 检查是否包含实际内容（不只是链接、标签等）
+                const parentDiv = span.closest('.x1a6qonq');
+                if (parentDiv) {
+                    processTranslation(parentDiv);
                 }
             }
-
-            if (trendTextElement) {
-                processTranslation(trendTextElement, true);
-            }
         });
-    }
-
-    // 查找并翻译所有内容
-    function findAndTranslateAll() {
-        findAndTranslateTweets();
-        findAndTranslateUserDescription();
-        findAndTranslateTrends();
     }
 
     // 监听DOM变化，处理动态加载的内容
     const observer = new MutationObserver((mutations) => {
-        findAndTranslateAll();
+        findAndTranslateThreads();
     });
 
     // 监听主题变化
@@ -530,24 +487,25 @@
         subtree: true
     });
 
-    // 监听body的属性变化（主题切换通常会改变body的class或style）
+    // 监听body的属性变化（主题切换）
     themeObserver.observe(document.body, {
         attributes: true,
         attributeFilter: ['class', 'style']
     });
 
-    // 监听HTML元素的属性变化（有些网站会在html元素上设置主题）
     themeObserver.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ['class', 'style', 'data-theme']
     });
 
     // 初始翻译
-    findAndTranslateAll();
+    setTimeout(() => {
+        findAndTranslateThreads();
+    }, 1000);
 
-    // 定期检查新内容（作为备用）
-    setInterval(findAndTranslateAll, 2000);
+    // 定期检查新内容
+    setInterval(findAndTranslateThreads, 3000);
 
-    console.log('Twitter翻译脚本已加载，当前设置:', getSettings());
+    console.log('Threads翻译脚本已加载，当前设置:', getSettings());
 
 })();
