@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.14
+// @version      0.15
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -921,15 +921,21 @@
                 e.preventDefault();
                 e.stopPropagation();
 
-                // 添加关键词到列表
-                if (!keywords.includes(questionText)) {
-                    const newKeywords = [...keywords, questionText];
-                    saveKeywordsAndSync(newKeywords, `手动屏蔽: ${questionText}`);
+                // 去掉末尾的问号
+                let cleanedText = questionText;
+                if (cleanedText.endsWith('?') || cleanedText.endsWith('?')) {
+                    cleanedText = cleanedText.slice(0, -1);
+                }
 
-                    console.log(`✅ 已添加屏蔽关键词: "${questionText}"`);
+                // 添加关键词到列表
+                if (!keywords.includes(cleanedText)) {
+                    const newKeywords = [...keywords, cleanedText];
+                    saveKeywordsAndSync(newKeywords, `手动屏蔽: ${cleanedText}`);
+
+                    console.log(`✅ 已添加屏蔽关键词: "${cleanedText}"`);
 
                     // 显示成功提示
-                    showNotification(`已添加屏蔽词: "${questionText}"`);
+                    showNotification(`已添加屏蔽词: "${cleanedText}"`);
                 }
 
                 // 隐藏该问题
@@ -942,7 +948,7 @@
                         // 创建提示元素
                         const message = document.createElement('div');
                         message.className = 'custom-hidden-message';
-                        message.innerHTML = `🚫 已手动屏蔽问题: "${questionText}"`;
+                        message.innerHTML = `🚫 已手动屏蔽问题: "${cleanedText}"`;
 
                         // 替换原始内容
                         contentItem.parentNode.replaceChild(message, contentItem);
@@ -952,7 +958,7 @@
                     }
 
                     // 记录到控制台
-                    logHiddenContent(questionText, questionText, contentItem, '手动添加', '手动屏蔽');
+                    logHiddenContent(cleanedText, cleanedText, contentItem, '手动添加', '手动屏蔽');
                 }
             });
 
@@ -1178,23 +1184,29 @@
                 event.preventDefault();
                 event.stopPropagation();
 
+                // 去掉末尾的问号
+                let cleanedText = selectedText;
+                if (cleanedText.endsWith('?') || cleanedText.endsWith('?')) {
+                    cleanedText = cleanedText.slice(0, -1);
+                }
+
                 // 检查是否已存在该关键词
-                if (!keywords.includes(selectedText)) {
+                if (!keywords.includes(cleanedText)) {
                     // 添加到关键词列表
-                    const newKeywords = [...keywords, selectedText];
-                    saveAllSettingsAndSync(newKeywords, blockedUsers, `快捷键添加: ${selectedText}`);
+                    const newKeywords = [...keywords, cleanedText];
+                    saveAllSettingsAndSync(newKeywords, blockedUsers, `快捷键添加: ${cleanedText}`);
 
                     // 显示成功提示
-                    showNotification(`✅ 已添加屏蔽词: "${selectedText}"`);
+                    showNotification(`✅ 已添加屏蔽词: "${cleanedText}"`);
 
                     // 如果当前在主站，立即执行一次匹配处理
                     if (isMainZhihuSite()) {
                         hideQuestions();
                     }
 
-                    console.log(`✅ 快捷键添加屏蔽关键词: "${selectedText}"`);
+                    console.log(`✅ 快捷键添加屏蔽关键词: "${cleanedText}"`);
                 } else {
-                    showNotification(`⚠️ 屏蔽词已存在: "${selectedText}"`);
+                    showNotification(`⚠️ 屏蔽词已存在: "${cleanedText}"`);
                 }
             } else {
                 showNotification('⚠️ 请先选择要屏蔽的文本');
