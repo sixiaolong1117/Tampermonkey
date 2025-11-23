@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.13
+// @version      0.14
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -34,6 +34,7 @@
     // 显示设置
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
+    const DEFAULT_ENABLE_SEARCH_FILTER = false;  // 默认不在搜索页过滤
 
     // 提取 @version
     const SCRIPT_VERSION = GM_info.script.version || 'unknown';
@@ -45,6 +46,7 @@
     let timeFilterDays = GM_getValue(TIME_FILTER_DAYS_KEY, 30);
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
+    let enableSearchFilter = GM_getValue(STORAGE_PREFIX + 'enable_search_filter', DEFAULT_ENABLE_SEARCH_FILTER);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -864,62 +866,6 @@
         textareas.keywords.focus();
     }
 
-    // 显示用户屏蔽管理器
-    function showUserBlockManager() {
-        const overlay = document.createElement('div');
-        overlay.className = 'keyword-manager-overlay';
-
-        const manager = document.createElement('div');
-        manager.className = 'keyword-manager-modal';
-        manager.innerHTML = `
-            <div class="keyword-manager">
-                <h3>知乎用户屏蔽管理</h3>
-                <textarea placeholder="每行一个用户名&#10;&#10;示例：&#10;用户名1&#10;用户名2&#10;用户名3">${blockedUsers.join('\n')}</textarea>
-                <div class="button-group">
-                    <button class="close-btn">取消</button>
-                    <button class="save-btn">保存</button>
-                </div>
-                <div class="help-text">
-                    <div><strong>使用说明：</strong></div>
-                    <div>• 每行输入一个用户名</div>
-                    <div>• 该用户的所有回答和文章将被隐藏</div>
-                    <div>• 点击回答旁的"屏蔽作者"按钮可快速添加</div>
-                </div>
-            </div>
-        `;
-
-        manager.querySelector('.save-btn').addEventListener('click', function () {
-            const textarea = manager.querySelector('textarea');
-            const newUsers = textarea.value.split('\n')
-                .map(line => line.trim())
-                .filter(line => line.length > 0);
-
-            saveBlockedUsersAndSync(newUsers, '通过管理器修改');
-
-            overlay.remove();
-            manager.remove();
-
-            hideQuestions();
-            hideAdvertCards();
-        });
-
-        manager.querySelector('.close-btn').addEventListener('click', function () {
-            overlay.remove();
-            manager.remove();
-        });
-
-        overlay.addEventListener('click', function (e) {
-            if (e.target === overlay) {
-                overlay.remove();
-                manager.remove();
-            }
-        });
-
-        document.body.appendChild(overlay);
-        document.body.appendChild(manager);
-        manager.querySelector('textarea').focus();
-    }
-
     // 检查文本是否匹配关键词
     function isTextMatched(text) {
         for (const keyword of keywords) {
@@ -1099,6 +1045,11 @@
 
         // 用户主页不启用屏蔽功能
         if (isPeoplePage) {
+            return;
+        }
+
+        // 如果 isMainZhihuSite() 返回 false（例如搜索页关闭过滤），则不执行屏蔽
+        if (!isMainZhihuSite()) {
             return;
         }
 
@@ -1370,6 +1321,63 @@
         }
     }
 
+    // 搜索页过滤开关设置界面
+    function showSearchFilterSettings() {
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        const settingsModal = document.createElement('div');
+        settingsModal.className = 'keyword-manager-modal';
+        settingsModal.innerHTML = `
+        <div class="keyword-manager">
+            <h3>搜索页过滤设置</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="enable-search-filter" ${enableSearchFilter ? 'checked' : ''} style="margin-right: 8px;">
+                    在搜索页启用屏蔽过滤
+                </label>
+            </div>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div><strong>设置说明:</strong></div>
+                <div>• 启用后，搜索结果将应用关键词和用户屏蔽规则</div>
+                <div>• 默认关闭，以保证搜索结果的完整性</div>
+                <div>• 修改后需要刷新页面才能生效</div>
+            </div>
+        </div>
+    `;
+
+        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
+            const newEnableSearchFilter = settingsModal.querySelector('#enable-search-filter').checked;
+
+            enableSearchFilter = newEnableSearchFilter;
+            GM_setValue(STORAGE_PREFIX + 'enable_search_filter', enableSearchFilter);
+
+            overlay.remove();
+            settingsModal.remove();
+
+            showNotification(`搜索页过滤已${enableSearchFilter ? '启用' : '禁用'}，刷新页面生效`);
+        });
+
+        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            settingsModal.remove();
+        });
+
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                settingsModal.remove();
+            }
+        });
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(settingsModal);
+    }
+
     // 检查当前页面是否在主站（允许执行屏蔽功能）
     function isMainZhihuSite() {
         const currentUrl = window.location.href;
@@ -1382,6 +1390,11 @@
         // 排除问题详情页
         if (currentUrl.includes('/question/')) {
             return false;
+        }
+
+        // 搜索页：根据开关决定是否启用
+        if (currentUrl.includes('/search?')) {
+            return enableSearchFilter;
         }
 
         const mainSites = [
@@ -1410,9 +1423,14 @@
 
     // 输出脚本信息
     function logScriptInfo() {
+        const currentUrl = window.location.href;
         const isQuestionPage = window.location.href.includes('/question/');
         const isPeoplePage = window.location.href.includes('/people/');
-        const pageType = isQuestionPage ? '问题详情页（启用回答屏蔽）' : (isPeoplePage ? '用户主页' : (isMainZhihuSite() ? '知乎首页' : '其他页面'));
+        const pageType = isQuestionPage ? '问题详情页（启用回答屏蔽）' :
+            (isPeoplePage ? '用户主页' :
+                (currentUrl.includes('/search?') ?
+                    `搜索页（${enableSearchFilter ? '已启用过滤' : '未启用过滤'}）` :
+                    (isMainZhihuSite() ? '知乎首页' : '其他页面')));
 
         console.log(
             `%c📚 知乎问题关键词屏蔽脚本已启动\n` +
@@ -1422,6 +1440,7 @@
             `📄 当前页面: ${pageType}\n` +
             `📱 同时隐藏广告卡片 (TopstoryItem--advertCard)\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
+            `🔍 搜索页过滤: ${enableSearchFilter ? '启用' : '禁用'}\n` +
             `🔘 屏蔽按钮: ${showBlockButton ? '显示' : '隐藏'}\n` +
             `📦 占位块: ${showPlaceholder ? '显示' : '隐藏'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
@@ -1651,7 +1670,7 @@
 
     // 注册油猴菜单命令
     GM_registerMenuCommand('管理屏蔽设置', showKeywordManager);
-    // GM_registerMenuCommand('管理屏蔽用户', showUserBlockManager);
+    GM_registerMenuCommand('搜索页过滤设置', showSearchFilterSettings);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
     GM_registerMenuCommand('显示设置', showDisplaySettings);
@@ -1755,6 +1774,7 @@
             `💡 功能: 点击"屏蔽作者"按钮快速屏蔽用户\n` +
             `💡 菜单: 使用"管理屏蔽设置"统一管理关键词和用户屏蔽\n` +
             `💡 当前页面: ${isQuestionPage ? '问题详情页' : (isPeoplePage ? '用户主页' : '首页或其他页面')}\n` +
+            `💡 搜索页: ${window.location.href.includes('/search?') ? (enableSearchFilter ? '过滤已启用' : '过滤未启用（默认）') : '不在搜索页'}\n` +
             `💡 时间过滤: ${(isQuestionPage || isPeoplePage) ? '禁用' : (timeFilterDays > 0 ? timeFilterDays + '天前' : '禁用')}`
         );
     }
