@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.13
+// @version      0.14
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -116,7 +116,7 @@
             padding: 1px 6px;
             margin-left: 5px;
         }
-        .head_name_24eEB {
+        ._name_18nz8_120 {
             display: flex;
             align-items: center;
             gap: 5px;
@@ -1048,13 +1048,13 @@
             return;
         }
 
-        const feedItems = document.querySelectorAll('.Feed_body_3R0rO');
+        const feedItems = document.querySelectorAll('._body_m3n8j_63');
 
         feedItems.forEach((feedItem) => {
             if (feedItem.querySelector('.weibo-block-btn')) return;
 
             // 直接找到用户名链接
-            const userLink = feedItem.querySelector('a.head_name_24eEB[usercard]');
+            const userLink = feedItem.querySelector('a._name_18nz8_120[usercard]');
             if (!userLink) return;
 
             const userId = userLink.getAttribute('usercard');
@@ -1134,7 +1134,7 @@
     // 为评论区用户添加屏蔽按钮
     function addCommentBlockButtons() {
         // 查找所有评论区容器
-        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+        const commentFeeds = document.querySelectorAll('.wbpro-list');
 
         commentFeeds.forEach(feed => {
             // 查找该评论区内的所有评论项
@@ -1286,7 +1286,7 @@
             return;
         }
 
-        const feedBodies = document.querySelectorAll('.Feed_body_3R0rO');
+        const feedBodies = document.querySelectorAll('._body_m3n8j_63');
 
         feedBodies.forEach(feedBody => {
             // 跳过已经被隐藏的内容，检查是否已处理
@@ -1347,9 +1347,9 @@
             const hasBase64Img = img && img.src.startsWith('data:image/');
 
             if (matchesKeyword || hasBase64Img) {
-                // 找到 Feed_body_3R0rO 元素
-                const feedBody = tag.closest('.woo-panel-main')?.querySelector('.Feed_body_3R0rO') ||
-                    tag.closest('.WB_cardwrap')?.querySelector('.Feed_body_3R0rO');
+                // 找到 _body_m3n8j_63 元素
+                const feedBody = tag.closest('.woo-panel-main')?.querySelector('._body_m3n8j_63') ||
+                    tag.closest('.WB_cardwrap')?.querySelector('._body_m3n8j_63');
 
                 // ✅ 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'tag')) {
@@ -1358,7 +1358,7 @@
 
                     // 获取原文文本
                     let originalText = "";
-                    const contentEl = feedBody.querySelector('.wbpro-feed-content .detail_text_1U10O .detail_wbtext_4CRf9');
+                    const contentEl = feedBody.querySelector('.wbpro-feed-content ._text_1psp9_2 ._wbtext_1psp9_14');
                     if (contentEl) {
                         originalText = contentEl.textContent.trim();
                     }
@@ -1409,8 +1409,8 @@
             const matchResult = isTextMatched(contentText);
 
             if (matchResult) {
-                // 找到 Feed_body_3R0rO 元素
-                const feedBody = feedContent.closest('.Feed_body_3R0rO');
+                // 找到 _body_m3n8j_63 元素
+                const feedBody = feedContent.closest('._body_m3n8j_63');
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'keyword')) {
                     feedBody.classList.add('custom-hidden');
@@ -1471,8 +1471,8 @@
             }
 
             if (userId && isUserIdBlocked(userId)) {
-                // 找到 Feed_body_3R0rO 元素
-                const feedBody = userLink.closest('.Feed_body_3R0rO');
+                // 找到 _body_m3n8j_63 元素
+                const feedBody = userLink.closest('._body_m3n8j_63');
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'userid')) {
                     feedBody.classList.add('custom-hidden');
@@ -1514,14 +1514,14 @@
 
     // 通过来源关键词屏蔽
     function hideBySourceKeywords() {
-        const sourceTags = document.querySelectorAll('.head-info_cut_1tPQI.head-info_source_2zcEX');
+        const sourceTags = document.querySelectorAll('._cut_1tpft_29._source_1tpft_46');
         sourceTags.forEach(sourceTag => {
             const sourceText = sourceTag.textContent.trim();
             const matchResult = isSourceMatched(sourceText);
 
             if (matchResult) {
-                // 找到 Feed_body_3R0rO 元素
-                const feedBody = sourceTag.closest('.Feed_body_3R0rO');
+                // 找到 _body_m3n8j_63 元素
+                const feedBody = sourceTag.closest('._body_m3n8j_63');
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'source')) {
                     feedBody.classList.add('custom-hidden');
@@ -1571,7 +1571,7 @@
     // 屏蔽评论区用户
     function hideCommentsByUserId() {
         // 查找所有评论区容器（支持两种类型）
-        const commentFeeds = document.querySelectorAll('[class*="RepostCommentFeed_"], [class*="RepostCommentList_"]');
+        const commentFeeds = document.querySelectorAll('.wbpro-list');
 
         commentFeeds.forEach(feed => {
             // 查找该评论区内的所有评论项
@@ -1779,7 +1779,7 @@
         if (timeFilterDays <= 0) return false;
 
         // 查找时间链接元素
-        const timeLink = feedBody.querySelector('a[class*="head-info_time"]');
+        const timeLink = feedBody.querySelector('a[class*="_time_1tpft_33"]');
         if (!timeLink) return false;
 
         const dateString = timeLink.getAttribute('title');
@@ -2010,8 +2010,8 @@
                         if (node.nodeType === 1) { // 元素节点
                             // 检查是否是微博内容节点
                             if (node.classList && (
-                                node.classList.contains('Feed_body_3R0rO') ||
-                                node.querySelector('.Feed_body_3R0rO')
+                                node.classList.contains('_body_m3n8j_63') ||
+                                node.querySelector('._body_m3n8j_63')
                             )) {
                                 shouldProcess = true;
                             }
