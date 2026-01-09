@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.14
+// @version      0.15
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -49,6 +49,51 @@
 
     // WebDAV配置存储键
     const WEBDAV_CONFIG_KEY = STORAGE_PREFIX + 'webdav_config';
+
+    const SELECTORS = {
+        // 微博主体
+        feedBody: '._body_m3n8j_63',
+        feedItem: '.wbpro-scroller-item',
+
+        // 用户信息相关
+        avatar: '.woo-avatar-main[usercard]',
+        userLink: 'a[href*="/u/"]',
+        userName: '._link_1b05f_126',
+        userNameAlt: '._name_1b05f_122',
+        nickContainer: '._nick_1b05f_25',
+        suffixBox: '._suffixbox_1b05f_33',
+        iconsPlus: '._iconsPlus_1b05f_75',
+
+        // 微博内容
+        feedContent: '.wbpro-feed-content',
+        feedText: '._wbtext_1psp9_14',
+        feedTextContainer: '._text_1psp9_2',
+
+        // 时间和来源
+        timeLink: 'a[class*="_time_1tpft_33"]',
+        sourceTag: '._cut_1tpft_29._source_1tpft_46',
+
+        // 按钮相关
+        followButton: '._followbtn_1sy5n_2',
+        moreButton: '._more_1v5ao_27',
+        expandButton: '.expand',
+        collapseButton: '.collapse',
+
+        // 评论区
+        commentFeed: '.wbpro-list',
+
+        // 标签
+        tagPrefix: 'wbpro-tag',
+        feedListTop: '[node-type="feed_list_top"]',
+
+        // 超话相关
+        chaohuaIcon: '._chaohuaIcon_1b05f_166',
+        superText: '._superText_1b05f_133',
+
+        // 面板
+        panelMain: '.woo-panel-main',
+        cardWrap: '.WB_cardwrap'
+    };
     // =================================================
 
     // 初始化关键词列表和ID列表
@@ -1048,16 +1093,21 @@
             return;
         }
 
-        const feedItems = document.querySelectorAll('._body_m3n8j_63');
+        const feedItems = document.querySelectorAll(SELECTORS.feedBody);
 
         feedItems.forEach((feedItem) => {
             if (feedItem.querySelector('.weibo-block-btn')) return;
 
-            // 直接找到用户名链接
-            const userLink = feedItem.querySelector('a._name_18nz8_120[usercard]');
-            if (!userLink) return;
+            // 查找用户头像链接（更稳定的方式）
+            const avatarDiv = feedItem.querySelector('.woo-avatar-main[usercard]');
+            if (!avatarDiv) return;
 
-            const userId = userLink.getAttribute('usercard');
+            const userId = avatarDiv.getAttribute('usercard');
+
+            // 查找用户名链接用于插入按钮
+            const userLink = feedItem.querySelector(SELECTORS.userLink) ||
+                feedItem.querySelector(SELECTORS.userName);
+            if (!userLink) return;
             let userName = '未知用户';
             const userSpan = userLink.querySelector('span');
             if (userSpan) {
@@ -1123,22 +1173,45 @@
                 }
             });
 
-            // 直接将按钮插入到用户名链接的后面
-            userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
+            const container = findBlockButtonContainer(feedItem);
+            if (container) {
+                container.appendChild(blockBtn);
+            } else {
+                // 降级方案
+                userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
+            }
         });
 
         // 为评论区添加屏蔽按钮
         addCommentBlockButtons();
     }
 
+    // 智能查找插入位置
+    function findBlockButtonContainer(feedItem) {
+        // 优先查找已存在的 iconsPlus 容器
+        let container = feedItem.querySelector(SELECTORS.iconsPlus);
+        if (container) return container;
+
+        // 如果没有，尝试在 nick 或 suffixbox 中创建
+        const parentBox = feedItem.querySelector('._nick_1b05f_25, ._suffixbox_1b05f_33');
+        if (parentBox) {
+            container = document.createElement('div');
+            container.className = 'woo-box-flex woo-box-alignCenter _iconsPlus_1b05f_75';
+            parentBox.appendChild(container);
+            return container;
+        }
+
+        return null;
+    }
+
     // 为评论区用户添加屏蔽按钮
     function addCommentBlockButtons() {
         // 查找所有评论区容器
-        const commentFeeds = document.querySelectorAll('.wbpro-list');
+        const commentFeeds = document.querySelectorAll(SELECTORS.commentFeed);
 
         commentFeeds.forEach(feed => {
             // 查找该评论区内的所有评论项
-            const commentItems = feed.querySelectorAll('.wbpro-list');
+            const commentItems = feed.querySelectorAll(SELECTORS.commentFeed);
 
             commentItems.forEach(item => {
                 // 检查是否已经添加过按钮
@@ -1147,10 +1220,15 @@
                 }
 
                 // 查找评论中的用户链接
-                const userLink = item.querySelector('a[usercard]');
-                if (!userLink) return;
+                // 查找评论中的用户头像
+                const avatarDiv = item.querySelector('.woo-avatar-main[usercard]');
+                if (!avatarDiv) return;
 
-                const userId = userLink.getAttribute('usercard');
+                const userId = avatarDiv.getAttribute('usercard');
+
+                // 查找用户名链接用于插入按钮
+                const userLink = item.querySelector(SELECTORS.userLink);
+                if (!userLink) return;
                 if (!userId) return;
 
                 // 获取用户名
@@ -1286,7 +1364,7 @@
             return;
         }
 
-        const feedBodies = document.querySelectorAll('._body_m3n8j_63');
+        const feedBodies = document.querySelectorAll(SELECTORS.feedBody);
 
         feedBodies.forEach(feedBody => {
             // 跳过已经被隐藏的内容，检查是否已处理
@@ -1334,7 +1412,7 @@
     // 通过标签屏蔽
     function hideByTags() {
         const tags = Array.from(document.querySelectorAll('*[class], [node-type="feed_list_top"]')).filter(el =>
-            Array.from(el.classList).some(c => c.startsWith('wbpro-tag')) || el.getAttribute('node-type') === 'feed_list_top'
+            Array.from(el.classList).some(c => c.startsWith(SELECTORS.tagPrefix)) || el.getAttribute('node-type') === 'feed_list_top'
         );
         tags.forEach(tag => {
             const tagText = tag.textContent.trim();
@@ -1348,8 +1426,8 @@
 
             if (matchesKeyword || hasBase64Img) {
                 // 找到 _body_m3n8j_63 元素
-                const feedBody = tag.closest('.woo-panel-main')?.querySelector('._body_m3n8j_63') ||
-                    tag.closest('.WB_cardwrap')?.querySelector('._body_m3n8j_63');
+                const feedBody = tag.closest(SELECTORS.panelMain)?.querySelector(SELECTORS.feedBody) ||
+                    tag.closest(SELECTORS.cardWrap)?.querySelector(SELECTORS.feedBody);
 
                 // ✅ 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'tag')) {
@@ -1410,7 +1488,7 @@
 
             if (matchResult) {
                 // 找到 _body_m3n8j_63 元素
-                const feedBody = feedContent.closest('._body_m3n8j_63');
+                const feedBody = feedContent.closest(SELECTORS.feedBody);
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'keyword')) {
                     feedBody.classList.add('custom-hidden');
@@ -1472,7 +1550,7 @@
 
             if (userId && isUserIdBlocked(userId)) {
                 // 找到 _body_m3n8j_63 元素
-                const feedBody = userLink.closest('._body_m3n8j_63');
+                const feedBody = userLink.closest(SELECTORS.feedBody);
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'userid')) {
                     feedBody.classList.add('custom-hidden');
@@ -1514,14 +1592,14 @@
 
     // 通过来源关键词屏蔽
     function hideBySourceKeywords() {
-        const sourceTags = document.querySelectorAll('._cut_1tpft_29._source_1tpft_46');
+        const sourceTags = document.querySelectorAll(SELECTORS.sourceTag);
         sourceTags.forEach(sourceTag => {
             const sourceText = sourceTag.textContent.trim();
             const matchResult = isSourceMatched(sourceText);
 
             if (matchResult) {
                 // 找到 _body_m3n8j_63 元素
-                const feedBody = sourceTag.closest('._body_m3n8j_63');
+                const feedBody = sourceTag.closest(SELECTORS.feedBody);
                 // 检查是否已处理
                 if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'source')) {
                     feedBody.classList.add('custom-hidden');
@@ -1571,11 +1649,11 @@
     // 屏蔽评论区用户
     function hideCommentsByUserId() {
         // 查找所有评论区容器（支持两种类型）
-        const commentFeeds = document.querySelectorAll('.wbpro-list');
+        const commentFeeds = document.querySelectorAll(SELECTORS.commentFeed);
 
         commentFeeds.forEach(feed => {
             // 查找该评论区内的所有评论项
-            const commentItems = feed.querySelectorAll('.wbpro-list');
+            const commentItems = feed.querySelectorAll(SELECTORS.commentFeed);
 
             commentItems.forEach(item => {
                 // 查找用户链接
@@ -1779,7 +1857,7 @@
         if (timeFilterDays <= 0) return false;
 
         // 查找时间链接元素
-        const timeLink = feedBody.querySelector('a[class*="_time_1tpft_33"]');
+        const timeLink = feedBody.querySelector(SELECTORS.timeLink);
         if (!timeLink) return false;
 
         const dateString = timeLink.getAttribute('title');
@@ -1824,7 +1902,7 @@
     function clickExpandButtons() {
         if (!autoExpandEnabled) return;
 
-        const expandButtons = document.querySelectorAll('.expand');
+        const expandButtons = document.querySelectorAll(SELECTORS.expandButton);
         let clickCount = 0;
 
         expandButtons.forEach(button => {
@@ -1849,7 +1927,7 @@
     function hideCollapseButtons() {
         if (!autoExpandEnabled) return;
 
-        const collapseButtons = document.querySelectorAll('.collapse');
+        const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
         collapseButtons.forEach(btn => {
             if (!isButtonProcessed(btn, 'hidden')) {
                 btn.style.display = 'none';
@@ -1924,7 +2002,7 @@
                 initAutoExpand();
             } else {
                 // 如果禁用，恢复收起按钮的显示
-                const collapseButtons = document.querySelectorAll('.collapse');
+                const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
                 collapseButtons.forEach(btn => {
                     btn.style.display = '';
                     btn.style.visibility = '';
@@ -1932,7 +2010,7 @@
                 });
 
                 // 清除展开按钮的标记
-                const expandButtons = document.querySelectorAll('.expand');
+                const expandButtons = document.querySelectorAll(SELECTORS.expandButton);
                 expandButtons.forEach(btn => {
                     btn.classList.remove('clicked');
                     delete btn.dataset.autoExpandProcessed;
@@ -2011,14 +2089,14 @@
                             // 检查是否是微博内容节点
                             if (node.classList && (
                                 node.classList.contains('_body_m3n8j_63') ||
-                                node.querySelector('._body_m3n8j_63')
+                                node.querySelector(SELECTORS.feedBody)
                             )) {
                                 shouldProcess = true;
                             }
                             // 检查是否有展开按钮
                             if (autoExpandEnabled && (
                                 node.classList && node.classList.contains('expand') ||
-                                (node.querySelector && node.querySelector('.expand'))
+                                (node.querySelector && node.querySelector(SELECTORS.expandButton))
                             )) {
                                 shouldAutoExpand = true;
                             }
