@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.15
+// @version      0.16
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -1537,55 +1537,63 @@
 
     // 通过用户ID屏蔽
     function hideByUserId() {
-        const userLinks = document.querySelectorAll('a[usercard], [usercard] a');
-        userLinks.forEach(userLink => {
-            const userId = userLink.getAttribute('usercard');
-            let userName = '未知用户';
+        const avatarDivs = document.querySelectorAll(SELECTORS.avatar);
 
-            // 获取用户名称
-            const nameSpan = userLink.querySelector('span');
-            if (nameSpan) {
-                userName = nameSpan.getAttribute('title') || nameSpan.textContent || userName;
+        avatarDivs.forEach(avatarDiv => {
+            const userId = avatarDiv.getAttribute('usercard');
+
+            if (!userId || !isUserIdBlocked(userId)) {
+                return;
             }
 
-            if (userId && isUserIdBlocked(userId)) {
-                // 找到 _body_m3n8j_63 元素
-                const feedBody = userLink.closest(SELECTORS.feedBody);
-                // 检查是否已处理
-                if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'userid')) {
-                    feedBody.classList.add('custom-hidden');
-                    markAsProcessed(feedBody, 'userid'); // 标记已处理
+            // 找到 feedBody
+            const feedBody = avatarDiv.closest(SELECTORS.feedBody);
 
-                    // 隐藏所有同级子元素
-                    const parent = feedBody.parentElement;
-                    Array.from(parent.children).forEach(child => {
-                        if (!child.classList.contains('custom-hidden-message')) {
-                            child.style.display = 'none';
+            // 检查是否已处理
+            if (feedBody && !feedBody.classList.contains('custom-hidden') && !isProcessed(feedBody, 'userid')) {
+                feedBody.classList.add('custom-hidden');
+                markAsProcessed(feedBody, 'userid');
+
+                // 获取用户名
+                let userName = '未知用户';
+                const header = avatarDiv.closest('header');
+                if (header) {
+                    const userLink = header.querySelector(`${SELECTORS.userLink}, ${SELECTORS.userName}`);
+                    if (userLink) {
+                        const nameSpan = userLink.querySelector('span');
+                        if (nameSpan) {
+                            userName = nameSpan.getAttribute('title') || nameSpan.textContent || userName;
                         }
-                    });
-
-                    // 根据设置决定是否显示占位块
-                    if (showPlaceholder) {
-                        // 创建提示元素并添加到父容器
-                        const message = document.createElement('div');
-                        message.className = 'custom-hidden-message';
-                        message.innerHTML = `
-                        <div class="message-content">
-                             已隐藏屏蔽用户: ${userName} (ID: ${userId})
-                        </div>
-                    `;
-                        parent.appendChild(message);
-                    } else {
-                        // 使用最小化占位符
-                        const placeholder = document.createElement('div');
-                        placeholder.className = 'custom-hidden-message minimal-placeholder';
-                        placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
-                        parent.appendChild(placeholder);
                     }
-
-                    // 记录到控制台
-                    logHiddenContent('用户ID', userId, feedBody, `屏蔽用户: ${userName}`);
                 }
+
+                // 隐藏所有同级子元素
+                const parent = feedBody.parentElement;
+                Array.from(parent.children).forEach(child => {
+                    if (!child.classList.contains('custom-hidden-message')) {
+                        child.style.display = 'none';
+                    }
+                });
+
+                // 根据设置决定是否显示占位块
+                if (showPlaceholder) {
+                    const message = document.createElement('div');
+                    message.className = 'custom-hidden-message';
+                    message.innerHTML = `
+                    <div class="message-content">
+                        已隐藏屏蔽用户: ${userName} (ID: ${userId})
+                    </div>
+                `;
+                    parent.appendChild(message);
+                } else {
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'custom-hidden-message minimal-placeholder';
+                    placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
+                    parent.appendChild(placeholder);
+                }
+
+                // 记录到控制台
+                logHiddenContent('用户ID', userId, feedBody, `屏蔽用户: ${userName}`);
             }
         });
     }
