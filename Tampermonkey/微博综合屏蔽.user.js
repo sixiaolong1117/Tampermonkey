@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.17
+// @version      0.18
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -43,6 +43,7 @@
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
     const DEFAULT_AUTO_EXPAND = false;
+    const DEFAULT_BLOCK_AI_CONTENT = false;  // 默认不屏蔽AI内容
 
     // 提取 @version
     const SCRIPT_VERSION = GM_info.script.version || 'unknown';
@@ -105,6 +106,7 @@
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
     let autoExpandEnabled = GM_getValue(STORAGE_PREFIX + 'auto_expand', DEFAULT_AUTO_EXPAND);
+    let blockAIContent = GM_getValue(STORAGE_PREFIX + 'block_ai_content', DEFAULT_BLOCK_AI_CONTENT);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -125,6 +127,7 @@
     GM_registerMenuCommand('显示设置', showDisplaySettings);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
     GM_registerMenuCommand('自动展开设置', showAutoExpandSettings);
+    GM_registerMenuCommand('AI内容屏蔽设置', showAIContentSettings);
 
     // 深浅色模式样式
     const styles = `
@@ -301,7 +304,7 @@
                 color: #f1403c;
                 background: rgba(241, 64, 60, 0.1);
             }
-        }    
+        }
         .time-filter-hidden-message {
             margin: 10px 0;
         }
@@ -372,6 +375,17 @@
     }
 
     // 输出脚本信息
+    console.log(
+        `💡 提示: 在控制台使用以下命令:\n` +
+        `   getHiddenStats() - 查看隐藏统计\n` +
+        `   resetHiddenStats() - 重置统计计数\n` +
+        `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
+        `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
+        `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
+        `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
+        `💡 功能: AI内容屏蔽${blockAIContent ? '已启用' : '未启用，可在菜单中开启'}`
+    );
+
     function logScriptInfo() {
         console.log(
             `%c🐦 微博内容综合屏蔽脚本已启动\n` +
@@ -381,6 +395,7 @@
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
             `📱 自动展开: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
+            `🤖 AI内容屏蔽: ${blockAIContent ? '已启用' : '未启用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
             `⌨️  按 F9 添加选中文本到来源屏蔽词\n` +
@@ -408,11 +423,11 @@
                     </label>
                 </div>
                 <div style="margin-bottom: 15px;">
-                    <input type="url" id="webdav-url" placeholder="WebDAV服务器地址 (https://example.com/dav/)" 
+                    <input type="url" id="webdav-url" placeholder="WebDAV服务器地址 (https://example.com/dav/)"
                            value="${webdavConfig.url || ''}" style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; margin-bottom: 10px;">
-                    <input type="text" id="webdav-username" placeholder="用户名" 
+                    <input type="text" id="webdav-username" placeholder="用户名"
                            value="${webdavConfig.username || ''}" style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; margin-bottom: 10px;">
-                    <input type="password" id="webdav-password" placeholder="密码" 
+                    <input type="password" id="webdav-password" placeholder="密码"
                            value="${webdavConfig.password || ''}" style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px;">
                 </div>
                 <div class="button-group">
@@ -1348,6 +1363,8 @@
         hideByTimeFilter();
         // 方法6: 屏蔽评论区用户
         hideCommentsByUserId();
+        // 方法7: 屏蔽AI内容
+        hideByAIContent();
         // 强制更新页面布局
         forceLayoutUpdate();
     }
@@ -1632,6 +1649,32 @@
         });
     }
 
+    function hideByAIContent() {
+        if (!blockAIContent) return;
+
+        // 查找所有带有AI提示的元素
+        const aiTips = document.querySelectorAll('.woo-tip-main.woo-tip-warn');
+
+        aiTips.forEach(tip => {
+            const tipText = tip.textContent.trim();
+
+            // 检查是否包含AI相关提示
+            if (tipText.includes('疑似使用了AI生成技术') ||
+                tipText.includes('AI生成') ||
+                tipText.includes('请谨慎甄别')) {
+
+                const feedBody = tip.closest(SELECTORS.feedBody);
+
+                if (feedBody) {
+                    const message = '🤖 已屏蔽疑似AI生成的内容';
+                    if (applyHiddenStyle(feedBody, message, 'ai')) {
+                        logHiddenContent('AI内容', tipText, feedBody, 'AI生成提示');
+                    }
+                }
+            }
+        });
+    }
+
     // 显示显示设置界面
     function showDisplaySettings() {
         // 创建遮罩层
@@ -1720,9 +1763,9 @@
                 <label style="display: block; margin-bottom: 10px; font-weight: bold;">
                     隐藏多少天之前的微博：
                 </label>
-                <input type="number" id="time-filter-days" 
-                    value="${timeFilterDays}" 
-                    min="0" max="3650" 
+                <input type="number" id="time-filter-days"
+                    value="${timeFilterDays}"
+                    min="0" max="3650"
                     style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; background: var(--input-bg, white); color: var(--input-color, #333);">
             </div>
             <div class="button-group">
@@ -1964,6 +2007,73 @@
         document.body.appendChild(overlay);
         document.body.appendChild(settingsModal);
     }
+
+    function showAIContentSettings() {
+        const overlay = document.createElement('div');
+        overlay.className = 'keyword-manager-overlay';
+
+        const settingsModal = document.createElement('div');
+        settingsModal.className = 'keyword-manager-modal';
+        settingsModal.innerHTML = `
+        <div class="keyword-manager">
+            <h3>AI内容屏蔽设置</h3>
+            <div style="margin-bottom: 15px;">
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="block-ai-content" ${blockAIContent ? 'checked' : ''} style="margin-right: 8px;">
+                    屏蔽疑似AI生成的内容
+                </label>
+            </div>
+            <div class="button-group">
+                <button class="close-btn">取消</button>
+                <button class="save-btn">保存</button>
+            </div>
+            <div class="help-text">
+                <div><strong>AI内容屏蔽说明:</strong></div>
+                <div>• 启用后会自动屏蔽带有"疑似使用了AI生成技术"提示的微博</div>
+                <div>• 包括AI生成的视频、图片等内容</div>
+                <div>• 默认关闭，需要手动开启</div>
+            </div>
+        </div>
+    `;
+
+        // 保存按钮事件
+        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
+            const newBlockAIContent = settingsModal.querySelector('#block-ai-content').checked;
+
+            blockAIContent = newBlockAIContent;
+            GM_setValue(STORAGE_PREFIX + 'block_ai_content', blockAIContent);
+
+            // 关闭设置窗口
+            overlay.remove();
+            settingsModal.remove();
+
+            showNotification(`AI内容屏蔽已${blockAIContent ? '启用' : '禁用'}`);
+
+            // 重新执行屏蔽
+            hideContent();
+            forceLayoutUpdate();
+        });
+
+        // 关闭按钮事件
+        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
+            overlay.remove();
+            settingsModal.remove();
+        });
+
+        // 点击遮罩层关闭
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                settingsModal.remove();
+            }
+        });
+
+        // 添加到页面
+        document.body.appendChild(overlay);
+        document.body.appendChild(settingsModal);
+    }
+
+
 
     // 使用防抖避免频繁执行
     let timeoutId;
