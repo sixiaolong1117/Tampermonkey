@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小黑盒社区内容屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.1
+// @version      0.2
 // @description  屏蔽小黑盒社区的信息流内容，支持关键词、作者、游戏社区屏蔽
 // @author       SI Xiaolong
 // @match        https://www.xiaoheihe.cn/*
@@ -118,6 +118,24 @@
             return { title: '', content, author, game: '' };
         }
 
+        // 判断是评论通知
+        const isNotification = contentElement.classList.contains('message__comment-item');
+
+        if (isNotification) {
+            // 评论通知结构
+            const authorElement = contentElement.querySelector('.message-comment-item__username');
+            const author = authorElement ? authorElement.textContent.trim() : '';
+
+            const contentTextElement = contentElement.querySelector('.message-comment-item__text');
+            const content = contentTextElement ? contentTextElement.textContent.trim() : '';
+
+            // 也获取原文内容用于关键词匹配
+            const originalContentElement = contentElement.querySelector('.message-content-item__text');
+            const originalContent = originalContentElement ? originalContentElement.textContent.trim() : '';
+
+            return { title: '', content: content + ' ' + originalContent, author, game: '' };
+        }
+
         // 判断是信息流还是评论
         const isComment = contentElement.classList.contains('link-comment__comment-item');
 
@@ -179,23 +197,24 @@
 
         const { title, content, author, game } = getContentInfo(contentElement);
 
-        // 判断是否为楼层回复
+        // 判断是否为楼层回复或评论通知
         const isReply = contentElement.classList.contains('comment-children-item');
+        const isNotification = contentElement.classList.contains('message__comment-item');
 
         const menu = document.createElement('div');
         menu.id = 'heybox-block-menu';
         menu.style.cssText = `
-            position: fixed;
-            left: ${e.clientX}px;
-            top: ${e.clientY}px;
-            background: white;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            z-index: 999999;
-            min-width: 200px;
-            font-size: 14px;
-        `;
+        position: fixed;
+        left: ${e.clientX}px;
+        top: ${e.clientY}px;
+        background: white;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        z-index: 999999;
+        min-width: 200px;
+        font-size: 14px;
+    `;
 
         const menuItems = [
             {
@@ -212,12 +231,12 @@
                 disabled: !content
             },
             {
-                text: `屏蔽${isReply ? '回复者' : '作者'}: ${author}`,
+                text: `屏蔽${isReply || isNotification ? '评论者' : '作者'}: ${author}`,
                 action: () => {
                     if (author) {
                         addToBlockList(CONFIG_KEYS.AUTHORS, author);
                         scanAndBlockContent();
-                        showNotification(`已屏蔽${isReply ? '回复者' : '作者'}: ${author}`);
+                        showNotification(`已屏蔽${isReply || isNotification ? '评论者' : '作者'}: ${author}`);
                     }
                 },
                 disabled: !author
@@ -231,7 +250,7 @@
                         showNotification(`已屏蔽游戏: ${game}`);
                     }
                 },
-                disabled: !game || isReply  // 楼层回复没有游戏标签
+                disabled: !game || isReply || isNotification
             }
         ];
 
@@ -239,11 +258,11 @@
             const menuItem = document.createElement('div');
             menuItem.textContent = item.text;
             menuItem.style.cssText = `
-                padding: 8px 16px;
-                cursor: ${item.disabled ? 'not-allowed' : 'pointer'};
-                opacity: ${item.disabled ? '0.5' : '1'};
-                transition: background 0.2s;
-            `;
+            padding: 8px 16px;
+            cursor: ${item.disabled ? 'not-allowed' : 'pointer'};
+            opacity: ${item.disabled ? '0.5' : '1'};
+            transition: background 0.2s;
+        `;
             if (!item.disabled) {
                 menuItem.onmouseover = () => menuItem.style.background = '#f0f0f0';
                 menuItem.onmouseout = () => menuItem.style.background = 'white';
@@ -311,7 +330,8 @@
             '.bbs-home__content-item',
             '.hb-cpt__bbs-list-content',
             '.link-comment__comment-item',  // 评论区
-            '.comment-children-item'  // 新增:楼层回复
+            '.comment-children-item',  // 楼层回复
+            '.message__comment-item'  // 评论通知
         ];
 
         selectors.forEach(selector => {
@@ -329,8 +349,8 @@
     // 监听右键点击
     function attachContextMenu() {
         document.addEventListener('contextmenu', (e) => {
-            // 支持信息流、评论区和楼层回复
-            const contentElement = e.target.closest('.hb-cpt__bbs-content, .bbs-home__content-item, .hb-cpt__bbs-list-content, .link-comment__comment-item, .comment-children-item');
+            // 支持信息流、评论区、楼层回复和评论通知
+            const contentElement = e.target.closest('.hb-cpt__bbs-content, .bbs-home__content-item, .hb-cpt__bbs-list-content, .link-comment__comment-item, .comment-children-item, .message__comment-item');
             if (contentElement) {
                 createContextMenu(contentElement, e);
             }
