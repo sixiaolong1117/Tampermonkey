@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.18
+// @version      0.19
 // @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -1221,30 +1221,34 @@
 
     // 为评论区用户添加屏蔽按钮
     function addCommentBlockButtons() {
-        // 查找所有评论区容器
-        const commentFeeds = document.querySelectorAll(SELECTORS.commentFeed);
+        // 如果设置为不显示按钮,直接返回
+        if (!showBlockButton) {
+            return;
+        }
 
-        commentFeeds.forEach(feed => {
+        // 查找所有评论列表，包括刚加载的
+        const commentLists = document.querySelectorAll('.wbpro-list');
+
+        commentLists.forEach(list => {
             // 查找该评论区内的所有评论项
-            const commentItems = feed.querySelectorAll(SELECTORS.commentFeed);
+            const commentItems = list.querySelectorAll('.item1');
 
             commentItems.forEach(item => {
                 // 检查是否已经添加过按钮
-                if (item.querySelector('.weibo-block-btn')) {
+                if (item.querySelector('.weibo-block-btn-comment')) {
                     return;
                 }
 
-                // 查找评论中的用户链接
-                // 查找评论中的用户头像
+                // 查找评论中的用户头像（包含 usercard 属性）
                 const avatarDiv = item.querySelector('.woo-avatar-main[usercard]');
                 if (!avatarDiv) return;
 
                 const userId = avatarDiv.getAttribute('usercard');
-
-                // 查找用户名链接用于插入按钮
-                const userLink = item.querySelector(SELECTORS.userLink);
-                if (!userLink) return;
                 if (!userId) return;
+
+                // 查找用户名链接
+                const userLink = item.querySelector('a[usercard]');
+                if (!userLink) return;
 
                 // 获取用户名
                 let userName = userLink.textContent.trim() || '未知用户';
@@ -1254,31 +1258,6 @@
                 blockBtn.className = 'weibo-block-btn weibo-block-btn-comment';
                 blockBtn.textContent = '屏蔽';
                 blockBtn.title = `屏蔽用户 ${userName} (ID: ${userId})`;
-                blockBtn.style.cssText = `
-                    padding: 1px 6px;
-                    border: 1px solid #d0d0d0;
-                    border-radius: 3px;
-                    background: transparent;
-                    color: #8590a6;
-                    font-size: 11px;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                    flex-shrink: 0;
-                    margin-left: 5px;
-                `;
-
-                // 悬停效果
-                blockBtn.addEventListener('mouseenter', () => {
-                    blockBtn.style.borderColor = '#f1403c';
-                    blockBtn.style.color = '#f1403c';
-                    blockBtn.style.background = 'rgba(241, 64, 60, 0.05)';
-                });
-
-                blockBtn.addEventListener('mouseleave', () => {
-                    blockBtn.style.borderColor = '#d0d0d0';
-                    blockBtn.style.color = '#8590a6';
-                    blockBtn.style.background = 'transparent';
-                });
 
                 // 按钮点击事件
                 blockBtn.addEventListener('click', function (e) {
@@ -1292,38 +1271,18 @@
                         saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, `屏蔽评论用户: ${userName}`);
 
                         console.log(`✅ 已屏蔽评论用户: "${userName}" (ID: ${userId})`);
-
-                        // 显示成功提示
                         showNotification(`已屏蔽用户: ${userName}`);
 
                         // 调用 hideContent 统一处理屏蔽逻辑
                         hideContent();
-
-                        // 强制更新页面布局
                         forceLayoutUpdate();
                     } else {
                         showNotification(`用户 ${userName} 已在屏蔽列表中`);
                     }
                 });
 
-                // 创建评论区按钮容器
-                const commentButtonContainer = document.createElement('div');
-                commentButtonContainer.className = 'weibo-block-button-container';
-                commentButtonContainer.style.cssText = `
-                    display: inline-block;
-                    margin-left: 5px;
-                    vertical-align: middle;
-                `;
-
-                commentButtonContainer.appendChild(blockBtn);
-
-                // 阻止容器的点击事件冒泡
-                commentButtonContainer.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                });
-
-                // 将按钮容器添加到用户链接后面
-                userLink.parentNode.insertBefore(commentButtonContainer, userLink.nextSibling);
+                // 将按钮添加到用户链接后面
+                userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
             });
         });
     }
@@ -1615,30 +1574,32 @@
 
     // 屏蔽评论区用户
     function hideCommentsByUserId() {
-        const commentFeeds = document.querySelectorAll(SELECTORS.commentFeed);
+        const commentLists = document.querySelectorAll('.wbpro-list');
 
-        commentFeeds.forEach(feed => {
-            const commentItems = feed.querySelectorAll(SELECTORS.commentFeed);
+        commentLists.forEach(list => {
+            const commentItems = list.querySelectorAll('.item1');
 
             commentItems.forEach(item => {
-                const userLink = item.querySelector('a[usercard]');
-                if (!userLink) return;
+                const avatarDiv = item.querySelector('.woo-avatar-main[usercard]');
+                if (!avatarDiv) return;
 
-                const userId = userLink.getAttribute('usercard');
+                const userId = avatarDiv.getAttribute('usercard');
                 if (!userId || !isUserIdBlocked(userId)) return;
 
                 if (item.classList.contains('custom-hidden-comment')) return;
 
                 item.classList.add('custom-hidden-comment');
-                const userName = userLink.textContent.trim() || '未知用户';
+
+                const userLink = item.querySelector('a[usercard]');
+                const userName = userLink ? userLink.textContent.trim() : '未知用户';
 
                 if (showPlaceholder) {
                     Array.from(item.children).forEach(child => child.style.display = 'none');
                     const message = document.createElement('div');
                     message.className = 'custom-hidden-message';
                     message.innerHTML = `<div class="message-content" style="padding: 8px; font-size: 12px;">
-                    已隐藏用户评论: ${userName} (ID: ${userId})
-                </div>`;
+                已隐藏用户评论: ${userName} (ID: ${userId})
+            </div>`;
                     item.appendChild(message);
                 } else {
                     item.style.cssText = 'height: 1px; margin: -5px 0; padding: 0; overflow: hidden; opacity: 0; pointer-events: none;';
@@ -2118,6 +2079,7 @@
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
             let shouldAutoExpand = false;
+            let hasCommentArea = false;
 
             for (const mutation of mutations) {
                 // 只处理新增的 Feed 节点
@@ -2138,10 +2100,21 @@
                             )) {
                                 shouldAutoExpand = true;
                             }
+                            // 检查是否是评论区（评论区动态加载）
+                            if (node.classList && (
+                                node.classList.contains('wbpro-list') ||
+                                node.classList.contains('item1') ||
+                                node.querySelector && (
+                                    node.querySelector('.wbpro-list') ||
+                                    node.querySelector('.item1')
+                                )
+                            )) {
+                                hasCommentArea = true;
+                            }
                         }
                     }
                 }
-                if (shouldProcess || shouldAutoExpand) break;
+                if (shouldProcess || shouldAutoExpand || hasCommentArea) break;
             }
 
             if (shouldProcess) {
@@ -2150,6 +2123,13 @@
             if (shouldAutoExpand) {
                 clickExpandButtons();
                 hideCollapseButtons();
+            }
+            // 处理评论区
+            if (hasCommentArea) {
+                setTimeout(() => {
+                    addCommentBlockButtons();
+                    hideCommentsByUserId();
+                }, 200); // 延迟200ms确保DOM完全加载
             }
         });
 
