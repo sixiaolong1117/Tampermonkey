@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小黑盒社区内容屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.2
+// @version      0.3
 // @description  屏蔽小黑盒社区的信息流内容，支持关键词、作者、游戏社区屏蔽
 // @author       SI Xiaolong
 // @match        https://www.xiaoheihe.cn/*
@@ -9,10 +9,26 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-end
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    // 版本号提取
+    const SCRIPT_VERSION = GM_info.script.version || 'unknown';
+
+    // WebDAV配置存储键
+    const WEBDAV_CONFIG_KEY = 'heybox_webdav_config';
+
+    // WebDAV配置
+    let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
+        enabled: false,
+        url: '',
+        username: '',
+        password: '',
+        lastSync: 0
+    });
 
     // 存储配置的键名
     const CONFIG_KEYS = {
@@ -30,6 +46,12 @@
     // 保存屏蔽列表
     function saveBlockList(key, list) {
         GM_setValue(key, JSON.stringify(list));
+
+        // 同步到WebDAV
+        if (webdavConfig && webdavConfig.enabled) {
+            const keyName = Object.keys(CONFIG_KEYS).find(k => CONFIG_KEYS[k] === key);
+            syncToWebDAV(`保存${keyName || '列表'}`);
+        }
     }
 
     // 显示通知提示
@@ -346,6 +368,322 @@
         });
     }
 
+    // 显示WebDAV配置界面
+    function showWebDAVConfig() {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 9999998;
+    `;
+
+        const configModal = document.createElement('div');
+        configModal.style.cssText = `
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        width: 500px;
+        max-width: 90vw;
+        background: white;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        z-index: 9999999;
+    `;
+
+        configModal.innerHTML = `
+        <h3 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">WebDAV同步设置</h3>
+        <div style="margin-bottom: 15px;">
+            <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                <input type="checkbox" id="webdav-enabled" ${webdavConfig.enabled ? 'checked' : ''} style="margin-right: 8px;">
+                启用WebDAV同步
+            </label>
+        </div>
+        <div style="margin-bottom: 15px;">
+            <input type="url" id="webdav-url" placeholder="WebDAV服务器地址 (https://example.com/dav/)"
+                   value="${webdavConfig.url || ''}" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; box-sizing: border-box;">
+            <input type="text" id="webdav-username" placeholder="用户名"
+                   value="${webdavConfig.username || ''}" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; box-sizing: border-box;">
+            <input type="password" id="webdav-password" placeholder="密码"
+                   value="${webdavConfig.password || ''}" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;">
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="cancel-btn" style="padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background: #f5f5f5; color: #666;">取消</button>
+            <button id="save-btn" style="padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; background: #1890ff; color: white;">保存</button>
+        </div>
+        <div style="margin-top: 10px; font-size: 12px; color: #666; line-height: 1.4;">
+            <div><strong>WebDAV同步说明：</strong></div>
+            <div>• 启用后，每次修改屏蔽词会自动同步到WebDAV服务器</div>
+            <div>• 支持 Nextcloud、OwnCloud、坚果云等WebDAV服务</div>
+            <div>• 文件将保存为: heybox_blocklist.json</div>
+            <div>• 多设备使用时请注意冲突问题</div>
+        </div>
+    `;
+
+        configModal.querySelector('#save-btn').addEventListener('click', function () {
+            const enabled = configModal.querySelector('#webdav-enabled').checked;
+            const url = configModal.querySelector('#webdav-url').value.trim();
+            const username = configModal.querySelector('#webdav-username').value.trim();
+            const password = configModal.querySelector('#webdav-password').value;
+
+            webdavConfig = {
+                enabled: enabled,
+                url: url,
+                username: username,
+                password: password,
+                lastSync: webdavConfig.lastSync
+            };
+
+            GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
+
+            if (enabled) {
+                syncToWebDAV('保存配置后同步');
+            }
+
+            overlay.remove();
+            configModal.remove();
+            showNotification('WebDAV配置已保存' + (enabled ? '，正在同步...' : ''));
+        });
+
+        configModal.querySelector('#cancel-btn').addEventListener('click', function () {
+            overlay.remove();
+            configModal.remove();
+        });
+
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay) {
+                overlay.remove();
+                configModal.remove();
+            }
+        });
+
+        document.body.appendChild(overlay);
+        document.body.appendChild(configModal);
+    }
+
+    // WebDAV辅助函数
+    function getWebDAVUrls() {
+        let base = webdavConfig.url;
+        if (!base.endsWith('/')) base += '/';
+        const folder = base + 'HeyboxBlock/';
+        const file = folder + 'heybox_blocklist.json';
+        const auth = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
+        return { base, folder, file, auth };
+    }
+
+    function webdavRequest({ method, url, data, headers = {}, responseType }, callback) {
+        GM_xmlhttpRequest({
+            method,
+            url,
+            data,
+            headers: { 'Authorization': headers.auth || getWebDAVUrls().auth, ...headers },
+            responseType: responseType || 'text',
+            onload: res => callback(res),
+            onerror: () => callback({ status: 0, responseText: '' })
+        });
+    }
+
+    function updateLastSync(timestamp) {
+        webdavConfig.lastSync = timestamp;
+        GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
+    }
+
+    function createConfigObject(base = {}, reason = '手动同步') {
+        return {
+            ...base,
+            keywords: getBlockList(CONFIG_KEYS.KEYWORDS),
+            authors: getBlockList(CONFIG_KEYS.AUTHORS),
+            games: getBlockList(CONFIG_KEYS.GAMES),
+            lastModified: Date.now(),
+            reason,
+            timestamp: new Date().toISOString(),
+            _script_version: SCRIPT_VERSION
+        };
+    }
+
+    function compareVersion(a, b) {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+            const na = pa[i] || 0, nb = pb[i] || 0;
+            if (na > nb) return 1;
+            if (na < nb) return -1;
+        }
+        return 0;
+    }
+
+    function checkAndUpgradeVersion(remoteData) {
+        if (!remoteData._script_version || remoteData._script_version === SCRIPT_VERSION) {
+            console.log(`✅ 云端配置版本匹配：v${SCRIPT_VERSION}`);
+            return;
+        }
+
+        const remoteVer = remoteData._script_version;
+        const cmp = compareVersion(remoteVer, SCRIPT_VERSION);
+
+        if (cmp > 0) {
+            const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+            showNotification(msg, 'info');
+            console.log(msg);
+        } else if (cmp < 0) {
+            console.log(`⬆️ 云端配置 v${remoteVer} 较旧，自动升级中...`);
+            if (!window._heybox_version_upgrading) {
+                window._heybox_version_upgrading = true;
+                setTimeout(() => {
+                    syncToWebDAV('自动版本升级')
+                        .then(() => {
+                            const msg = `✅ 云端配置已升级：v${remoteVer} → v${SCRIPT_VERSION}`;
+                            console.log(msg);
+                            showNotification(msg);
+                        })
+                        .catch(() => showNotification('❌ 自动升级失败'))
+                        .finally(() => window._heybox_version_upgrading = false);
+                }, 1500);
+            }
+        }
+    }
+
+    function mergeFields(data) {
+        let updated = false;
+
+        if (Array.isArray(data.keywords)) {
+            saveBlockList(CONFIG_KEYS.KEYWORDS, data.keywords);
+            updated = true;
+        }
+        if (Array.isArray(data.authors)) {
+            saveBlockList(CONFIG_KEYS.AUTHORS, data.authors);
+            updated = true;
+        }
+        if (Array.isArray(data.games)) {
+            saveBlockList(CONFIG_KEYS.GAMES, data.games);
+            updated = true;
+        }
+
+        return updated;
+    }
+
+    // 从WebDAV拉取
+    function syncFromWebDAV() {
+        if (!webdavConfig.enabled || !webdavConfig.url) return Promise.resolve(false);
+
+        const { file } = getWebDAVUrls();
+
+        return new Promise(resolve => {
+            webdavRequest({ method: 'GET', url: file, responseType: 'json' }, res => {
+                if (res.status !== 200) {
+                    if (res.status === 404) {
+                        console.log('🔄 文件不存在，初始化上传');
+                        syncToWebDAV('初始化同步').then(() => resolve(false));
+                    } else {
+                        console.error('❌ 拉取失败:', res.status);
+                        resolve(false);
+                    }
+                    return;
+                }
+
+                let data;
+                try { data = res.response || {}; } catch { data = {}; }
+
+                const localTS = webdavConfig.lastSync || 0;
+                const remoteTS = data.lastModified || 0;
+                const remoteVer = data._script_version;
+
+                const shouldDownload = remoteTS > localTS;
+                const shouldUpload = remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) < 0;
+
+                let finalResolved = false;
+
+                if (shouldDownload) {
+                    const updated = mergeFields(data);
+                    if (updated) {
+                        updateLastSync(remoteTS);
+                        const msg = '✅ 时间戳更新：已从云端同步数据';
+                        console.log(msg);
+                        showNotification(msg);
+                        checkAndUpgradeVersion(data);
+                        scanAndBlockContent();
+                        resolve(true);
+                        finalResolved = true;
+                    }
+                }
+
+                if (shouldUpload && !finalResolved) {
+                    console.log(`⬆️ 远端版本 v${remoteVer} 落后，强制升级`);
+                    syncToWebDAV('强制版本升级')
+                        .then(success => {
+                            if (success) {
+                                showNotification(`✅ 远端配置已强制升级至 v${SCRIPT_VERSION}`);
+                                updateLastSync(Date.now());
+                            }
+                            resolve(success);
+                        });
+                    return;
+                }
+
+                if (!finalResolved) {
+                    console.log('✅ 本地已是最新，无需操作');
+                    if (remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) > 0) {
+                        const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
+                        showNotification(msg, 'info');
+                        console.log(msg);
+                    }
+                    resolve(false);
+                }
+            });
+        });
+    }
+
+    // 推送到WebDAV
+    function syncToWebDAV(reason = '手动同步') {
+        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
+            console.log('请配置 WebDAV');
+            return Promise.resolve();
+        }
+
+        const { folder, file, auth } = getWebDAVUrls();
+
+        return new Promise(resolve => {
+            webdavRequest({ method: 'PROPFIND', url: folder }, res => {
+                if (res.status === 404) {
+                    webdavRequest({ method: 'MKCOL', url: folder }, () => proceed());
+                } else {
+                    proceed();
+                }
+            });
+
+            function proceed() {
+                webdavRequest({ method: 'GET', url: file }, res => {
+                    let remote = {};
+                    if (res.status === 200) {
+                        try { remote = JSON.parse(res.responseText) || {}; } catch { }
+                    }
+
+                    const data = createConfigObject(remote, reason);
+                    webdavRequest({
+                        method: 'PUT',
+                        url: file,
+                        data: JSON.stringify(data, null, 2),
+                        headers: { 'Content-Type': 'application/json; charset=utf-8', auth }
+                    }, putRes => {
+                        if (putRes.status >= 200 && putRes.status < 300) {
+                            updateLastSync(data.lastModified);
+                            console.log('上传成功');
+                            resolve(true);
+                        } else {
+                            console.log('上传失败:', putRes.status);
+                            resolve(false);
+                        }
+                    });
+                });
+            }
+        });
+    }
+
     // 监听右键点击
     function attachContextMenu() {
         document.addEventListener('contextmenu', (e) => {
@@ -505,10 +843,21 @@
 
     // 注册油猴菜单命令
     GM_registerMenuCommand('管理屏蔽列表', openManageDialog);
+    GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
 
     // 初始化
     function init() {
         console.log('小黑盒社区内容屏蔽脚本正在启动...');
+
+        // WebDAV同步检查
+        if (webdavConfig.enabled) {
+            console.log('🔗 检查WebDAV同步...');
+            syncFromWebDAV().then(synced => {
+                if (synced) {
+                    scanAndBlockContent();
+                }
+            });
+        }
 
         // 先绑定右键菜单
         attachContextMenu();
