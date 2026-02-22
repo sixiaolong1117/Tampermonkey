@@ -129,7 +129,42 @@
     GM_registerMenuCommand('自动展开设置', showAutoExpandSettings);
     GM_registerMenuCommand('AI内容屏蔽设置', showAIContentSettings);
 
-    // 深浅色模式样式
+    const additionalStyles = `
+        .blocked-item-with-placeholder {
+            height: auto !important;
+            min-height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+        }
+        .blocked-item-hidden {
+            height: 2px !important;
+            min-height: 2px !important;
+            margin: -1px 0 !important;
+            padding: 0 !important;
+            opacity: 0.01 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+        }
+        .blocked-article-with-placeholder {
+            height: auto !important;
+            min-height: auto !important;
+            margin: 0 !important;
+            padding: 15px !important;
+            overflow: hidden !important;
+        }
+        .blocked-article-hidden {
+            height: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            opacity: 0 !important;
+            overflow: hidden !important;
+            pointer-events: none !important;
+        }
+    `;
+
     const styles = `
         .custom-hidden-message {
             margin: 10px 0;
@@ -1308,24 +1343,29 @@
 
     // 修改用户ID屏蔽逻辑
     function hideContent() {
-        // 先添加屏蔽按钮
+        // 使用DocumentFragment减少重排
+        const fragment = document.createDocumentFragment();
+
+        // 批量收集需要处理的元素
+        const tasks = [];
+
+        // 先添加屏蔽按钮（一次性处理）
         addBlockButtons();
-        // 方法1: 通过推荐标签屏蔽
-        hideByTags();
-        // 方法2: 通过关键词屏蔽
-        hideByKeywords();
-        // 方法3: 通过用户ID屏蔽
-        hideByUserId();
-        // 方法4: 通过来源关键词屏蔽
-        hideBySourceKeywords();
-        // 方法5: 通过时间过滤屏蔽
-        hideByTimeFilter();
-        // 方法6: 屏蔽评论区用户
-        hideCommentsByUserId();
-        // 方法7: 屏蔽AI内容
-        hideByAIContent();
-        // 强制更新页面布局
-        forceLayoutUpdate();
+
+        // 收集所有需要屏蔽的元素
+        tasks.push(() => hideByTags());
+        tasks.push(() => hideByKeywords());
+        tasks.push(() => hideByUserId());
+        tasks.push(() => hideBySourceKeywords());
+        tasks.push(() => hideByTimeFilter());
+        tasks.push(() => hideCommentsByUserId());
+        tasks.push(() => hideByAIContent());
+
+        // 使用requestAnimationFrame批量执行，减少重排
+        requestAnimationFrame(() => {
+            tasks.forEach(task => task());
+            // 不再需要强制更新布局
+        });
     }
 
     // 判断当前页面是否为热搜页
@@ -1394,41 +1434,26 @@
         feedBody.classList.add('custom-hidden');
         markAsProcessed(feedBody, reason);
 
-        // 找到最外层的容器 (wbpro-scroller-item 或 vue-recycle-scroller__item-view)
+        // 找到最外层容器
         const scrollerItem = feedBody.closest('.wbpro-scroller-item') ||
             feedBody.closest('.vue-recycle-scroller__item-view');
         const article = feedBody.closest('article');
 
+        // 使用CSS类替代内联样式，减少重排
         if (scrollerItem) {
-            // 压缩整个滚动项
-            scrollerItem.style.cssText = `
-            height: ${showPlaceholder ? 'auto' : '2px'} !important;
-            min-height: ${showPlaceholder ? 'auto' : '2px'} !important;
-            margin: ${showPlaceholder ? '0' : '-1px 0'} !important;
-            padding: 0 !important;
-            opacity: ${showPlaceholder ? '1' : '0.01'} !important;
-            overflow: hidden !important;
-            transition: none !important;
-        `;
+            scrollerItem.classList.add(showPlaceholder ? 'blocked-item-with-placeholder' : 'blocked-item-hidden');
         }
 
         if (article) {
-            article.style.cssText = `
-            height: ${showPlaceholder ? 'auto' : '0'} !important;
-            min-height: ${showPlaceholder ? 'auto' : '0'} !important;
-            margin: 0 !important;
-            padding: ${showPlaceholder ? '15px' : '0'} !important;
-            border: ${showPlaceholder ? '' : 'none'} !important;
-            opacity: ${showPlaceholder ? '1' : '0'} !important;
-            overflow: hidden !important;
-        `;
+            article.classList.add(showPlaceholder ? 'blocked-article-with-placeholder' : 'blocked-article-hidden');
         }
 
         const parent = feedBody.parentElement;
         if (!parent) return false;
 
-        // 隐藏feedBody内的所有内容
-        Array.from(parent.children).forEach(child => {
+        // 批量隐藏子元素
+        const children = Array.from(parent.children);
+        children.forEach(child => {
             if (!child.classList.contains('custom-hidden-message') &&
                 !child.classList.contains('time-filter-hidden-message')) {
                 child.style.display = 'none';
@@ -1440,10 +1465,8 @@
             const messageDiv = document.createElement('div');
             messageDiv.className = 'custom-hidden-message';
             messageDiv.innerHTML = `<div class="message-content">${message}</div>`;
-            messageDiv.style.cssText = 'margin: 0; padding: 8px;';
             parent.appendChild(messageDiv);
         } else {
-            // 完全不添加任何占位元素
             parent.style.display = 'none';
         }
 
@@ -2034,7 +2057,29 @@
         document.body.appendChild(settingsModal);
     }
 
+    let lastHideTime = 0;
+    let pendingHide = false;
+    function throttledHide() {
+        const now = Date.now();
+        const timeSinceLastHide = now - lastHideTime;
 
+        if (timeSinceLastHide >= 50) {
+            // 立即执行
+            lastHideTime = now;
+            pendingHide = false;
+            hideContent();
+        } else if (!pendingHide) {
+            // 节流等待
+            pendingHide = true;
+            setTimeout(() => {
+                if (pendingHide) {
+                    lastHideTime = Date.now();
+                    pendingHide = false;
+                    hideContent();
+                }
+            }, 50 - timeSinceLastHide);
+        }
+    }
 
     // 使用防抖避免频繁执行
     let timeoutId;
@@ -2055,6 +2100,11 @@
         GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
         GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
 
+        // 添加额外样式
+        const additionalStyleSheet = document.createElement('style');
+        additionalStyleSheet.textContent = additionalStyles;
+        document.head.appendChild(additionalStyleSheet);
+
         // 输出脚本启动信息
         logScriptInfo();
 
@@ -2066,7 +2116,6 @@
             console.log('🔗 检查WebDAV同步...');
             syncFromWebDAV().then(synced => {
                 if (synced) {
-                    // 如果同步了新的数据，重新执行屏蔽
                     hideContent();
                 }
             });
@@ -2075,75 +2124,116 @@
         // 页面加载时执行一次
         hideContent();
 
-        // 监听DOM变化（使用防抖）
+        // 优化的MutationObserver - 精确监听，立即响应
         const observer = new MutationObserver((mutations) => {
-            let shouldProcess = false;
-            let shouldAutoExpand = false;
-            let hasCommentArea = false;
+            let needsProcessing = false;
+            let needsAutoExpand = false;
+            let needsCommentProcessing = false;
+
+            // 使用Set去重，避免重复处理同一元素
+            const processedNodes = new Set();
 
             for (const mutation of mutations) {
-                // 只处理新增的 Feed 节点
                 if (mutation.addedNodes.length > 0) {
                     for (const node of mutation.addedNodes) {
-                        if (node.nodeType === 1) { // 元素节点
-                            // 检查是否是微博内容节点
-                            if (node.classList && (
-                                node.classList.contains('_body_m3n8j_63') ||
-                                node.querySelector(SELECTORS.feedBody)
-                            )) {
-                                shouldProcess = true;
+                        if (node.nodeType !== 1 || processedNodes.has(node)) continue;
+                        processedNodes.add(node);
+
+                        // 精确匹配微博内容节点
+                        if (node.classList) {
+                            if (node.classList.contains('_body_m3n8j_63') ||
+                                node.classList.contains('wbpro-scroller-item') ||
+                                node.classList.contains('vue-recycle-scroller__item-view')) {
+                                needsProcessing = true;
                             }
-                            // 检查是否有展开按钮
-                            if (autoExpandEnabled && (
-                                node.classList && node.classList.contains('expand') ||
-                                (node.querySelector && node.querySelector(SELECTORS.expandButton))
-                            )) {
-                                shouldAutoExpand = true;
+
+                            if (autoExpandEnabled && node.classList.contains('expand')) {
+                                needsAutoExpand = true;
                             }
-                            // 检查是否是评论区（评论区动态加载）
-                            if (node.classList && (
-                                node.classList.contains('wbpro-list') ||
-                                node.classList.contains('item1') ||
-                                node.querySelector && (
-                                    node.querySelector('.wbpro-list') ||
-                                    node.querySelector('.item1')
-                                )
-                            )) {
-                                hasCommentArea = true;
+
+                            if (node.classList.contains('wbpro-list') || node.classList.contains('item1')) {
+                                needsCommentProcessing = true;
+                            }
+                        }
+
+                        // 检查子节点（仅一层）
+                        if (node.querySelector) {
+                            if (!needsProcessing && node.querySelector(SELECTORS.feedBody)) {
+                                needsProcessing = true;
+                            }
+                            if (autoExpandEnabled && !needsAutoExpand && node.querySelector(SELECTORS.expandButton)) {
+                                needsAutoExpand = true;
+                            }
+                            if (!needsCommentProcessing && (node.querySelector('.wbpro-list') || node.querySelector('.item1'))) {
+                                needsCommentProcessing = true;
                             }
                         }
                     }
                 }
-                if (shouldProcess || shouldAutoExpand || hasCommentArea) break;
             }
 
-            if (shouldProcess) {
-                debouncedHide();
+            // 立即处理，不使用节流
+            if (needsProcessing) {
+                hideContent();
             }
-            if (shouldAutoExpand) {
-                clickExpandButtons();
-                hideCollapseButtons();
+            if (needsAutoExpand) {
+                requestAnimationFrame(() => {
+                    clickExpandButtons();
+                    hideCollapseButtons();
+                });
             }
-            // 处理评论区
-            if (hasCommentArea) {
-                setTimeout(() => {
+            if (needsCommentProcessing) {
+                requestAnimationFrame(() => {
                     addCommentBlockButtons();
                     hideCommentsByUserId();
-                }, 200); // 延迟200ms确保DOM完全加载
+                });
             }
         });
 
+        // 优化的Observer配置 - 只监听必要的变化
         observer.observe(document.body, {
             childList: true,
             subtree: true,
-            attributes: false, // 不监听属性变化
-            characterData: false // ✅ 不监听文本变化
+            attributes: false,
+            characterData: false,
+            attributeOldValue: false,
+            characterDataOldValue: false
         });
+
+        // 使用Intersection Observer优化虚拟滚动场景
+        const intersectionObserver = new IntersectionObserver((entries) => {
+            let hasNewVisible = false;
+            entries.forEach(entry => {
+                if (entry.isIntersecting && !entry.target.classList.contains('custom-hidden')) {
+                    hasNewVisible = true;
+                }
+            });
+            if (hasNewVisible) {
+                throttledHide();
+            }
+        }, {
+            root: null,
+            rootMargin: '100px', // 提前100px开始处理
+            threshold: 0.01
+        });
+
+        // 监听所有滚动容器中的feed项
+        const observeScrollItems = () => {
+            document.querySelectorAll('.wbpro-scroller-item, .vue-recycle-scroller__item-view').forEach(item => {
+                if (!item.dataset.observing) {
+                    intersectionObserver.observe(item);
+                    item.dataset.observing = 'true';
+                }
+            });
+        };
+
+        observeScrollItems();
+        setInterval(observeScrollItems, 2000); // 定期检查新元素
 
         // 初始化自动展开功能
         initAutoExpand();
 
-        // 添加全局函数以便在控制台手动查看统计
+        // 添加全局函数
         window.getHiddenStats = function () {
             const tagStats = hiddenDetails.filter(d => d.type === '推荐标签').length;
             const keywordStats = hiddenDetails.filter(d => d.type === '关键词').length;
@@ -2166,7 +2256,6 @@
             console.log('📋 完整记录:', hiddenDetails);
         };
 
-        // 添加重置统计的函数
         window.resetHiddenStats = function () {
             hiddenCount = 0;
             hiddenDetails.length = 0;
