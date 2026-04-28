@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.25
+// @version      0.26
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、统一功能设置和自动展开
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -1126,6 +1126,73 @@
         return blockedIds.includes(userId);
     }
 
+    function getUserNameFromLink(userLink, fallback = '未知用户') {
+        if (!userLink) return fallback;
+
+        const nameSpan = userLink.querySelector('span');
+        const rawName = nameSpan?.getAttribute('title') ||
+            nameSpan?.textContent ||
+            userLink.getAttribute('title') ||
+            userLink.textContent ||
+            fallback;
+
+        return rawName.trim().replace(/^@/, '') || fallback;
+    }
+
+    function getUserIdFromLink(userLink) {
+        if (!userLink) return '';
+
+        const usercard = userLink.getAttribute('usercard');
+        if (usercard) return usercard;
+
+        const href = userLink.getAttribute('href') || '';
+        const match = href.match(/\/u\/(\d+)/);
+        return match ? match[1] : '';
+    }
+
+    function addFeedAuthor(authors, seenIds, userId, userName, role) {
+        if (!userId || seenIds.has(userId)) return;
+
+        seenIds.add(userId);
+        authors.push({
+            id: userId,
+            name: userName || '未知用户',
+            role
+        });
+    }
+
+    function getFeedAuthors(feedBody) {
+        const authors = [];
+        const seenIds = new Set();
+        if (!feedBody) return authors;
+
+        const header = feedBody.querySelector('header');
+        const mainAvatar = header?.querySelector(SELECTORS.avatar) || feedBody.querySelector(SELECTORS.avatar);
+        const mainUserId = mainAvatar?.getAttribute('usercard') || '';
+        const mainUserLink = header?.querySelector(`a[usercard="${mainUserId}"], a[href*="/u/${mainUserId}"], ${SELECTORS.userLink}, ${SELECTORS.userName}`) ||
+            feedBody.querySelector(`a[usercard="${mainUserId}"], a[href*="/u/${mainUserId}"]`);
+
+        addFeedAuthor(authors, seenIds, mainUserId, getUserNameFromLink(mainUserLink), '主作者');
+
+        const retweetLinks = feedBody.querySelectorAll([
+            '.retweet a[usercard]',
+            '.retweet a[href*="/u/"]',
+            '[class*="retweet"] a[usercard]',
+            '[class*="retweet"] a[href*="/u/"]',
+            '.wbpro-feed-reText a[usercard]',
+            '.wbpro-feed-reText a[href*="/u/"]',
+            '[class*="_reText_"] a[usercard]',
+            '[class*="_reText_"] a[href*="/u/"]'
+        ].join(', '));
+
+        retweetLinks.forEach(userLink => {
+            const userId = getUserIdFromLink(userLink);
+            addFeedAuthor(authors, seenIds, userId, getUserNameFromLink(userLink), '转发原作者');
+        });
+
+        return authors;
+    }
+
     // 显示通知
     function showNotification(message, timeout = 3000) {
         // 备用方案：在页面右上角显示临时提示
@@ -1724,27 +1791,15 @@
 
     // 通过用户ID屏蔽
     function hideByUserId() {
-        const avatarDivs = document.querySelectorAll(SELECTORS.avatar);
+        const feedBodies = document.querySelectorAll(SELECTORS.feedBody);
 
-        avatarDivs.forEach(avatarDiv => {
-            const userId = avatarDiv.getAttribute('usercard');
-            if (!userId || !isUserIdBlocked(userId)) return;
+        feedBodies.forEach(feedBody => {
+            const matchedAuthor = getFeedAuthors(feedBody).find(author => isUserIdBlocked(author.id));
+            if (!matchedAuthor) return;
 
-            const feedBody = avatarDiv.closest(SELECTORS.feedBody);
-            let userName = '未知用户';
-
-            const header = avatarDiv.closest('header');
-            if (header) {
-                const userLink = header.querySelector(`${SELECTORS.userLink}, ${SELECTORS.userName}`);
-                const nameSpan = userLink?.querySelector('span');
-                if (nameSpan) {
-                    userName = nameSpan.getAttribute('title') || nameSpan.textContent || userName;
-                }
-            }
-
-            const message = `已隐藏屏蔽用户: ${userName} (ID: ${userId})`;
+            const message = `已隐藏屏蔽用户: ${matchedAuthor.name} (ID: ${matchedAuthor.id}${matchedAuthor.role === '转发原作者' ? '，转发原作者' : ''})`;
             if (applyHiddenStyle(feedBody, message, 'userid')) {
-                logHiddenContent('用户ID', userId, feedBody, `屏蔽用户: ${userName}`);
+                logHiddenContent('用户ID', matchedAuthor.id, feedBody, `屏蔽用户: ${matchedAuthor.name} (${matchedAuthor.role})`);
             }
         });
     }
