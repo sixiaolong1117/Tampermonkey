@@ -18,6 +18,14 @@
     /* IP 状态着色（覆盖原有颜色） */
     .akile-ip-ok  { color: #16a34a !important; font-weight: 700 !important; }
     .akile-ip-ban { color: #dc2626 !important; font-weight: 700 !important; }
+    .akile-ip-blocked-card {
+      background: #fff1f2 !important;
+      border-color: #fecdd3 !important;
+      box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.08) !important;
+    }
+    .akile-ip-blocked-card .arco-card-body {
+      background: #fff1f2 !important;
+    }
 
     /* 剩余价值行 */
     .akile-rv-row {
@@ -64,6 +72,42 @@
       font-size: 11px;
       color: #9ca3af;
     }
+
+    /* 流量存量条 */
+    .akile-traffic-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-top: 5px;
+      width: 100%;
+    }
+    .akile-traffic-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: #6b7280;
+    }
+    .akile-traffic-percent {
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .akile-traffic-track {
+      width: 100%;
+      height: 6px;
+      background: #e5e7eb;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .akile-traffic-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.4s ease;
+    }
+    .akile-traffic-fill.good { background: #22c55e; }
+    .akile-traffic-fill.mid  { background: #eab308; }
+    .akile-traffic-fill.low  { background: #ef4444; }
   `;
   document.head.appendChild(style);
 
@@ -105,6 +149,40 @@
     };
   }
 
+  function parseMoney(text) {
+    if (!text) return null;
+    const m = text.match(/[¥￥]\s*([\d.]+)/);
+    return m ? parseFloat(m[1]) : null;
+  }
+
+  function parseTrafficAmount(text) {
+    if (!text) return null;
+    const m = text.trim().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)$/i);
+    if (!m) return null;
+
+    const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+    const unit = m[2].toUpperCase();
+    return parseFloat(m[1]) * units[unit];
+  }
+
+  function calcTrafficStock(text) {
+    if (!text) return null;
+    const parts = text.split('/').map((part) => part.trim());
+    if (parts.length !== 2) return null;
+
+    const used = parseTrafficAmount(parts[0]);
+    const total = parseTrafficAmount(parts[1]);
+    if (used === null || total === null || total <= 0) return null;
+
+    const remainingRatio = Math.max(0, Math.min((total - used) / total, 1));
+    return {
+      remainingRatio,
+      remainingPct: (remainingRatio * 100).toFixed(1),
+      usedText: parts[0],
+      totalText: parts[1],
+    };
+  }
+
   function getInfoValue(card, labelText) {
     for (const row of card.querySelectorAll('.server-info')) {
       const name = row.querySelector('.info-name');
@@ -116,34 +194,84 @@
     return null;
   }
 
+  function getSalePrice(card) {
+    return parseMoney(card.querySelector('.shop-server-price')?.textContent);
+  }
+
+  function getValueCompareClass(remainingValue, salePrice) {
+    if (salePrice === null || Number.isNaN(salePrice)) return 'zero';
+
+    const diff = remainingValue - salePrice;
+    if (diff > 1) return 'good';
+    if (diff < -1) return 'low';
+    return 'mid';
+  }
+
   // ─── IP 状态着色 ──────────────────────────────────────────
 
   function injectIpStatus(card) {
     const detailEl = card.querySelector('.server-detail');
-    if (!detailEl || detailEl.querySelector('.akile-ip-ok, .akile-ip-ban')) return;
+    if (!detailEl) return;
 
     const text = detailEl.textContent.trim();
     if (text.includes('IP正常')) {
-      detailEl.innerHTML = detailEl.innerHTML.replace(
-        '[IP正常]',
-        '<span class="akile-ip-ok">● IP正常</span>'
-      );
+      card.classList.remove('akile-ip-blocked-card');
+      if (detailEl.querySelector('.akile-ip-ok')) return;
+      detailEl.innerHTML = detailEl.innerHTML.replace('[IP正常]', '<span class="akile-ip-ok">● IP正常</span>');
     } else if (text.includes('IP被墙')) {
-      detailEl.innerHTML = detailEl.innerHTML.replace(
-        '[IP被墙]',
-        '<span class="akile-ip-ban">● IP被墙</span>'
-      );
+      card.classList.add('akile-ip-blocked-card');
+      if (detailEl.querySelector('.akile-ip-ban')) return;
+      detailEl.innerHTML = detailEl.innerHTML.replace('[IP被墙]', '<span class="akile-ip-ban">● IP被墙</span>');
+    } else {
+      card.classList.remove('akile-ip-blocked-card');
+    }
+  }
+
+  // ─── 流量存量条注入 ───────────────────────────────────────
+
+  function injectTrafficStock(card) {
+    for (const row of card.querySelectorAll('.server-info')) {
+      const name = row.querySelector('.info-name');
+      if (!name || name.textContent.trim() !== '网络') continue;
+
+      const valueEl = row.querySelector('.info-value');
+      const usageEl = valueEl && valueEl.querySelector('u');
+      const usageText = usageEl && usageEl.textContent.trim();
+      const result = usageText && calcTrafficStock(usageText);
+      if (!valueEl || !result) return;
+
+      const cls = result.remainingRatio >= 0.6 ? 'good' : result.remainingRatio >= 0.3 ? 'mid' : 'low';
+      let wrapper = valueEl.querySelector('.akile-traffic-row');
+      if (wrapper && wrapper.dataset.trafficText === usageText) return;
+      if (!wrapper) {
+        wrapper = document.createElement('div');
+        wrapper.className = 'akile-traffic-row';
+        valueEl.appendChild(wrapper);
+      }
+      wrapper.dataset.trafficText = usageText;
+
+      wrapper.innerHTML = `
+        <div class="akile-traffic-head">
+          <span>剩余流量</span>
+          <span class="akile-traffic-percent">${result.remainingPct}%</span>
+        </div>
+        <div class="akile-traffic-track" title="已用 ${result.usedText} / 总量 ${result.totalText}">
+          <div class="akile-traffic-fill ${cls}" style="width:${result.remainingPct}%"></div>
+        </div>
+      `;
+      return;
     }
   }
 
   // ─── 剩余价值注入 ─────────────────────────────────────────
 
   function injectCard(card) {
-    if (card.querySelector('.akile-rv-row')) return;
     injectIpStatus(card);
+    injectTrafficStock(card);
 
     const renewalText = getInfoValue(card, '续费价格');
     const expiryText  = getInfoValue(card, '到期时间');
+    const salePrice = getSalePrice(card);
     const result = calcRemainingValue(renewalText, expiryText);
 
     // 找到「到期时间」所在的 .server-info，插在其后
@@ -157,8 +285,14 @@
     }
     if (!insertAfter) return;
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'akile-rv-row';
+    let wrapper = card.querySelector('.akile-rv-row');
+    const signature = `${renewalText || ''}|${expiryText || ''}|${salePrice ?? ''}`;
+    if (wrapper && wrapper.dataset.valueSignature === signature) return;
+    if (!wrapper) {
+      wrapper = document.createElement('div');
+      wrapper.className = 'akile-rv-row';
+    }
+    wrapper.dataset.valueSignature = signature;
 
     if (!result) {
       wrapper.innerHTML = `
@@ -172,8 +306,11 @@
       `;
     } else {
       const pct = (result.ratio * 100).toFixed(1);
-      const cls = result.ratio >= 0.6 ? 'good' : result.ratio >= 0.3 ? 'mid' : 'low';
-      const barColor = result.ratio >= 0.6 ? '#22c55e' : result.ratio >= 0.3 ? '#eab308' : '#ef4444';
+      const cls = getValueCompareClass(result.value, salePrice);
+      const barColor = cls === 'good' ? '#22c55e' : cls === 'mid' ? '#eab308' : '#ef4444';
+      const compareText = salePrice === null
+        ? '未找到售价'
+        : `售价 ¥${salePrice.toFixed(2)}，差额 ${(result.value - salePrice) >= 0 ? '+' : ''}¥${(result.value - salePrice).toFixed(2)}`;
 
       wrapper.innerHTML = `
         <span class="akile-rv-label">剩余价值</span>
@@ -184,11 +321,11 @@
         <div class="akile-rv-bar">
           <div class="akile-rv-fill" style="width:${pct}%;background:${barColor}"></div>
         </div>
-        <span class="akile-rv-sub">按 ¥${result.price}/${result.unit} 计算</span>
+        <span class="akile-rv-sub">按 ¥${result.price}/${result.unit} 计算；${compareText}</span>
       `;
     }
 
-    insertAfter.insertAdjacentElement('afterend', wrapper);
+    if (!wrapper.isConnected) insertAfter.insertAdjacentElement('afterend', wrapper);
   }
 
   function processAllCards() {
