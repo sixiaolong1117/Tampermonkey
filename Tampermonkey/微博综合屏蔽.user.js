@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.24
+// @version      0.25
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、统一功能设置和自动展开
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -128,6 +128,11 @@
     let hideTopRecommendEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_recommend', DEFAULT_HIDE_TOP_RECOMMEND);
     let hideTopVideoEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_video', DEFAULT_HIDE_TOP_VIDEO);
     let redirectHomeToMyGroupsEnabled = GM_getValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', DEFAULT_REDIRECT_HOME_TO_MYGROUPS);
+    const AUTO_EXPAND_SCROLL_IDLE_MS = 700;
+    let lastScrollTime = 0;
+    let autoExpandTimer = null;
+    let autoExpandIntervalId = null;
+    const autoExpandedFeedIdentities = new Set();
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -1406,21 +1411,10 @@
 
     // 强制更新页面布局
     function forceLayoutUpdate() {
-        // 方法1: 触发resize事件（最温和的方式）
-        window.dispatchEvent(new Event('resize'));
-
-        // 方法2: 使用requestAnimationFrame确保渲染完成
         requestAnimationFrame(() => {
-            // 触发回流但不改变滚动位置
-            document.body.offsetHeight;
+            hideContent();
+            scheduleAutoExpand();
         });
-
-        // 方法3: 微调一个隐藏元素来触发重排
-        const trigger = document.createElement('div');
-        trigger.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;';
-        document.body.appendChild(trigger);
-        trigger.offsetHeight;
-        document.body.removeChild(trigger);
     }
 
     function hasTipsAdClass(element) {
@@ -2148,23 +2142,100 @@
         return button.dataset.autoExpandProcessed === type;
     }
 
+    function getFeedBodyFromElement(element) {
+        return element?.closest?.(SELECTORS.feedBody) ||
+            element?.closest?.(SELECTORS.feedItem)?.querySelector?.(SELECTORS.feedBody) ||
+            element?.closest?.('.vue-recycle-scroller__item-view')?.querySelector?.(SELECTORS.feedBody);
+    }
+
+    function getFeedIdentity(feedBody) {
+        if (!feedBody) return '';
+
+        const userId = feedBody.querySelector(SELECTORS.avatar)?.getAttribute('usercard') || '';
+        const time = feedBody.querySelector(SELECTORS.timeLink)?.getAttribute('title') ||
+            feedBody.querySelector(SELECTORS.timeLink)?.textContent?.trim() || '';
+        const text = feedBody.querySelector(SELECTORS.feedContent)?.textContent?.trim() ||
+            feedBody.textContent?.trim() || '';
+
+        return `${userId}|${time}|${text.slice(0, 120)}`;
+    }
+
+    function isElementVisible(element) {
+        if (!element || element.offsetParent === null) return false;
+
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom > 0 &&
+            rect.top < window.innerHeight;
+    }
+
+    function isFeedHidden(feedBody) {
+        return !feedBody ||
+            feedBody.classList.contains('custom-hidden') ||
+            feedBody.closest('.blocked-item-hidden, .blocked-article-hidden') ||
+            feedBody.closest('.blocked-item-with-placeholder, .blocked-article-with-placeholder');
+    }
+
+    function runAutoExpandNow() {
+        clickExpandButtons();
+        hideCollapseButtons();
+    }
+
+    function scheduleAutoExpand(delay = AUTO_EXPAND_SCROLL_IDLE_MS) {
+        if (!autoExpandEnabled) return;
+
+        clearTimeout(autoExpandTimer);
+        autoExpandTimer = setTimeout(() => {
+            const idleFor = Date.now() - lastScrollTime;
+            if (idleFor < AUTO_EXPAND_SCROLL_IDLE_MS) {
+                scheduleAutoExpand(AUTO_EXPAND_SCROLL_IDLE_MS - idleFor);
+                return;
+            }
+
+            requestAnimationFrame(runAutoExpandNow);
+        }, delay);
+    }
+
     // 点击展开按钮
     function clickExpandButtons() {
         if (!autoExpandEnabled) return;
+        if (Date.now() - lastScrollTime < AUTO_EXPAND_SCROLL_IDLE_MS) {
+            scheduleAutoExpand();
+            return;
+        }
 
         const expandButtons = document.querySelectorAll(SELECTORS.expandButton);
         let clickCount = 0;
 
         expandButtons.forEach(button => {
-            if (button.offsetParent !== null &&
-                !button.classList.contains('clicked') &&
-                !isButtonProcessed(button, 'expanded')) {
+            const feedBody = getFeedBodyFromElement(button);
+            const feedIdentity = getFeedIdentity(feedBody);
 
-                button.click();
-                button.classList.add('clicked');
-                markButtonAsProcessed(button, 'expanded');
-                clickCount++;
+            if (!feedIdentity || isFeedHidden(feedBody) || !isElementVisible(button)) {
+                return;
             }
+
+            if (button.dataset.autoExpandedIdentity &&
+                button.dataset.autoExpandedIdentity !== feedIdentity) {
+                button.classList.remove('clicked');
+                delete button.dataset.autoExpandProcessed;
+            }
+
+            if (feedBody.dataset.autoExpandedIdentity === feedIdentity ||
+                autoExpandedFeedIdentities.has(feedIdentity) ||
+                button.classList.contains('clicked') ||
+                isButtonProcessed(button, 'expanded')) {
+                return;
+            }
+
+            button.click();
+            autoExpandedFeedIdentities.add(feedIdentity);
+            feedBody.dataset.autoExpandedIdentity = feedIdentity;
+            button.dataset.autoExpandedIdentity = feedIdentity;
+            button.classList.add('clicked');
+            markButtonAsProcessed(button, 'expanded');
+            clickCount++;
         });
 
         if (clickCount > 0) {
@@ -2179,7 +2250,8 @@
 
         const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
         collapseButtons.forEach(btn => {
-            if (!isButtonProcessed(btn, 'hidden')) {
+            const feedBody = getFeedBodyFromElement(btn);
+            if (!isFeedHidden(feedBody) && !isButtonProcessed(btn, 'hidden')) {
                 btn.style.display = 'none';
                 btn.style.visibility = 'hidden';
                 markButtonAsProcessed(btn, 'hidden');
@@ -2192,14 +2264,11 @@
         if (!autoExpandEnabled) return;
 
         // 初始执行
-        clickExpandButtons();
-        hideCollapseButtons();
+        scheduleAutoExpand(300);
 
-        // 设置定时检查
-        setInterval(() => {
-            clickExpandButtons();
-            hideCollapseButtons();
-        }, 2000);
+        if (!autoExpandIntervalId) {
+            autoExpandIntervalId = setInterval(scheduleAutoExpand, 2500);
+        }
 
         console.log('📱 微博自动展开功能已启用');
     }
@@ -2251,6 +2320,14 @@
             if (autoExpandEnabled) {
                 initAutoExpand();
             } else {
+                clearTimeout(autoExpandTimer);
+                autoExpandTimer = null;
+                if (autoExpandIntervalId) {
+                    clearInterval(autoExpandIntervalId);
+                    autoExpandIntervalId = null;
+                }
+                autoExpandedFeedIdentities.clear();
+
                 // 如果禁用，恢复收起按钮的显示
                 const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
                 collapseButtons.forEach(btn => {
@@ -2264,6 +2341,11 @@
                 expandButtons.forEach(btn => {
                     btn.classList.remove('clicked');
                     delete btn.dataset.autoExpandProcessed;
+                    delete btn.dataset.autoExpandedIdentity;
+                });
+
+                document.querySelectorAll(SELECTORS.feedBody).forEach(feedBody => {
+                    delete feedBody.dataset.autoExpandedIdentity;
                 });
             }
         });
@@ -2403,6 +2485,10 @@
 
         // 添加键盘事件监听
         document.addEventListener('keydown', handleKeyPress);
+        window.addEventListener('scroll', () => {
+            lastScrollTime = Date.now();
+            scheduleAutoExpand();
+        }, { passive: true, capture: true });
 
         // 页面加载时执行一次WebDAV同步检查
         if (webdavConfig.enabled) {
@@ -2502,10 +2588,7 @@
                 requestAnimationFrame(() => hideTopNavButtons());
             }
             if (needsAutoExpand) {
-                requestAnimationFrame(() => {
-                    clickExpandButtons();
-                    hideCollapseButtons();
-                });
+                scheduleAutoExpand();
             }
             if (needsCommentProcessing) {
                 requestAnimationFrame(() => {
