@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.19
-// @description  屏蔽推荐、广告、荐读标签，屏蔽自定义关键词的微博内容，支持正则表达式
+// @version      0.23
+// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持统一功能设置和自动展开
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
 // @author       SI Xiaolong
@@ -42,8 +42,13 @@
     const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
-    const DEFAULT_AUTO_EXPAND = false;
+    const DEFAULT_AUTO_EXPAND = true;
     const DEFAULT_BLOCK_AI_CONTENT = false;  // 默认不屏蔽AI内容
+    const DEFAULT_HIDE_HOT_SEARCH = true;    // 默认隐藏热搜栏
+    const DEFAULT_HIDE_HOME_ADS = true;      // 默认隐藏首页广告
+    const DEFAULT_HIDE_INTERESTED_PEOPLE = true; // 默认隐藏可能感兴趣的人
+    const DEFAULT_HIDE_TOP_RECOMMEND = true; // 默认隐藏顶栏推荐按钮
+    const DEFAULT_HIDE_TOP_VIDEO = true;     // 默认隐藏顶栏视频按钮
 
     // 提取 @version
     const SCRIPT_VERSION = GM_info.script.version || 'unknown';
@@ -93,7 +98,14 @@
 
         // 面板
         panelMain: '.woo-panel-main',
-        cardWrap: '.WB_cardwrap'
+        cardWrap: '.WB_cardwrap',
+
+        // 独立页面组件
+        hotBand: '.hotBand',
+        tipsAd: '[class^="TipsAd"], [class*=" TipsAd"]',
+        topRecommendLink: 'a[href="/hot"]',
+        topVideoLink: 'a[href="/tv"]',
+        sideTitle: '.wbpro-side-tit'
     };
     // =================================================
 
@@ -107,6 +119,11 @@
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
     let autoExpandEnabled = GM_getValue(STORAGE_PREFIX + 'auto_expand', DEFAULT_AUTO_EXPAND);
     let blockAIContent = GM_getValue(STORAGE_PREFIX + 'block_ai_content', DEFAULT_BLOCK_AI_CONTENT);
+    let hideHotSearchEnabled = GM_getValue(STORAGE_PREFIX + 'hide_hot_search', DEFAULT_HIDE_HOT_SEARCH);
+    let hideHomeAdsEnabled = GM_getValue(STORAGE_PREFIX + 'hide_home_ads', DEFAULT_HIDE_HOME_ADS);
+    let hideInterestedPeopleEnabled = GM_getValue(STORAGE_PREFIX + 'hide_interested_people', DEFAULT_HIDE_INTERESTED_PEOPLE);
+    let hideTopRecommendEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_recommend', DEFAULT_HIDE_TOP_RECOMMEND);
+    let hideTopVideoEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_video', DEFAULT_HIDE_TOP_VIDEO);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -123,11 +140,15 @@
 
     // 注册油猴菜单命令
     GM_registerMenuCommand('管理屏蔽关键词', showKeywordManager);
+    GM_registerMenuCommand('功能设置', showDisplaySettings);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
-    GM_registerMenuCommand('显示设置', showDisplaySettings);
-    GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
-    GM_registerMenuCommand('自动展开设置', showAutoExpandSettings);
-    GM_registerMenuCommand('AI内容屏蔽设置', showAIContentSettings);
+
+    const standaloneStyleSelectors = [
+        hideHotSearchEnabled ? '.hotBand' : '',
+        hideHomeAdsEnabled ? '[class^="TipsAd"], [class*=" TipsAd"]' : '',
+        hideTopRecommendEnabled ? 'a[href="/hot"]' : '',
+        hideTopVideoEnabled ? 'a[href="/tv"]' : ''
+    ].filter(Boolean).join(',\n        ');
 
     const additionalStyles = `
         .blocked-item-with-placeholder {
@@ -163,6 +184,20 @@
             overflow: hidden !important;
             pointer-events: none !important;
         }
+        ${standaloneStyleSelectors ? `${standaloneStyleSelectors} {
+            display: none !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            height: 0 !important;
+            width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            pointer-events: none !important;
+            position: absolute !important;
+            left: -9999px !important;
+            top: -9999px !important;
+            overflow: hidden !important;
+        }` : ''}
     `;
 
     const styles = `
@@ -211,6 +246,8 @@
             transform: translate(-50%, -50%);
             width: 500px;
             max-width: 90vw;
+            max-height: 90vh;
+            overflow: auto;
             background: var(--bg-color, white);
             border: 1px solid var(--border-color, #ccc);
             border-radius: 8px;
@@ -429,6 +466,8 @@
             `📱 屏蔽来源: ${sourceKeywords.length} 个\n` +
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
+            `🧹 右侧栏清理: 热搜${hideHotSearchEnabled ? '开' : '关'} / 首页广告${hideHomeAdsEnabled ? '开' : '关'} / 感兴趣的人${hideInterestedPeopleEnabled ? '开' : '关'}\n` +
+            `🧭 顶部导航清理: 推荐${hideTopRecommendEnabled ? '开' : '关'} / 视频${hideTopVideoEnabled ? '开' : '关'}\n` +
             `📱 自动展开: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
             `🤖 AI内容屏蔽: ${blockAIContent ? '已启用' : '未启用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
@@ -1341,6 +1380,129 @@
         document.body.removeChild(trigger);
     }
 
+    function hasTipsAdClass(element) {
+        if (!element || !element.className || typeof element.className !== 'string') return false;
+        return element.className.split(/\s+/).some(className => className.startsWith('TipsAd'));
+    }
+
+    function hideStandaloneElement(element) {
+        if (!element || !element.style || element.dataset.weiboCompositeHidden === 'true') return false;
+
+        element.style.display = 'none';
+        element.style.visibility = 'hidden';
+        element.style.opacity = '0';
+        element.style.height = '0';
+        element.style.width = '0';
+        element.style.margin = '0';
+        element.style.padding = '0';
+        element.style.pointerEvents = 'none';
+        element.style.position = 'absolute';
+        element.style.left = '-9999px';
+        element.style.top = '-9999px';
+        element.style.overflow = 'hidden';
+        element.dataset.weiboCompositeHidden = 'true';
+        return true;
+    }
+
+    function findInterestedPeopleCards(root = document) {
+        const cards = [];
+        const titles = [];
+
+        if (root.nodeType === 1 && root.matches?.(SELECTORS.sideTitle)) {
+            titles.push(root);
+        }
+        root.querySelectorAll?.(SELECTORS.sideTitle).forEach(title => titles.push(title));
+
+        titles.forEach(title => {
+            if (!title.textContent.includes('你可能感兴趣的人')) return;
+
+            const card = title.closest('.wbpro-side') || title.closest('.woo-panel-main');
+            if (card) cards.push(card);
+        });
+
+        return cards;
+    }
+
+    function hasInterestedPeopleCard(root) {
+        if (!root) return false;
+        if (root.nodeType === 1 && root.matches?.(SELECTORS.sideTitle) && root.textContent.includes('你可能感兴趣的人')) {
+            return true;
+        }
+        return Boolean(root.querySelector?.(SELECTORS.sideTitle) && root.textContent.includes('你可能感兴趣的人'));
+    }
+
+    function hideStandaloneSidebarWidgets(root = document) {
+        if (!hideHotSearchEnabled && !hideHomeAdsEnabled && !hideInterestedPeopleEnabled) {
+            return;
+        }
+
+        const elements = [];
+
+        if (root.nodeType === 1) {
+            if ((hideHotSearchEnabled && root.matches?.(SELECTORS.hotBand)) ||
+                (hideHomeAdsEnabled && hasTipsAdClass(root))) {
+                elements.push(root);
+            }
+            root.querySelectorAll?.(`${SELECTORS.hotBand}, ${SELECTORS.tipsAd}`).forEach(element => {
+                if ((hideHotSearchEnabled && element.matches(SELECTORS.hotBand)) ||
+                    (hideHomeAdsEnabled && hasTipsAdClass(element))) {
+                    elements.push(element);
+                }
+            });
+        } else {
+            root.querySelectorAll?.(`${SELECTORS.hotBand}, ${SELECTORS.tipsAd}`).forEach(element => {
+                if ((hideHotSearchEnabled && element.matches(SELECTORS.hotBand)) ||
+                    (hideHomeAdsEnabled && hasTipsAdClass(element))) {
+                    elements.push(element);
+                }
+            });
+        }
+        if (hideInterestedPeopleEnabled) {
+            elements.push(...findInterestedPeopleCards(root));
+        }
+
+        let hidden = 0;
+        [...new Set(elements)].forEach(element => {
+            if (hideStandaloneElement(element)) hidden++;
+        });
+
+        if (hidden > 0) {
+            console.log(`🚫 已隐藏 ${hidden} 个右侧栏元素`);
+        }
+    }
+
+    function hideTopNavButtons(root = document) {
+        if (!hideTopRecommendEnabled && !hideTopVideoEnabled) {
+            return;
+        }
+
+        const links = [];
+        if (root.nodeType === 1) {
+            if (hideTopRecommendEnabled && root.matches?.(SELECTORS.topRecommendLink)) {
+                links.push(root);
+            }
+            if (hideTopVideoEnabled && root.matches?.(SELECTORS.topVideoLink)) {
+                links.push(root);
+            }
+        }
+
+        if (hideTopRecommendEnabled) {
+            root.querySelectorAll?.(SELECTORS.topRecommendLink).forEach(link => links.push(link));
+        }
+        if (hideTopVideoEnabled) {
+            root.querySelectorAll?.(SELECTORS.topVideoLink).forEach(link => links.push(link));
+        }
+
+        let hidden = 0;
+        [...new Set(links)].forEach(link => {
+            if (hideStandaloneElement(link)) hidden++;
+        });
+
+        if (hidden > 0) {
+            console.log(`🚫 已隐藏 ${hidden} 个顶部导航按钮`);
+        }
+    }
+
     // 修改用户ID屏蔽逻辑
     function hideContent() {
         // 使用DocumentFragment减少重排
@@ -1360,6 +1522,8 @@
         tasks.push(() => hideByTimeFilter());
         tasks.push(() => hideCommentsByUserId());
         tasks.push(() => hideByAIContent());
+        tasks.push(() => hideStandaloneSidebarWidgets());
+        tasks.push(() => hideTopNavButtons());
 
         // 使用requestAnimationFrame批量执行，减少重排
         requestAnimationFrame(() => {
@@ -1659,7 +1823,7 @@
         });
     }
 
-    // 显示显示设置界面
+    // 显示统一功能设置界面
     function showDisplaySettings() {
         // 创建遮罩层
         const overlay = document.createElement('div');
@@ -1670,8 +1834,9 @@
         settingsModal.className = 'keyword-manager-modal';
         settingsModal.innerHTML = `
             <div class="keyword-manager">
-                <h3>显示设置</h3>
-                <div style="margin-bottom: 15px;">
+                <h3>功能设置</h3>
+                <div style="margin-bottom: 16px;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">显示</div>
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="show-block-button" ${showBlockButton ? 'checked' : ''} style="margin-right: 8px;">
                         显示用户名旁边的屏蔽按钮
@@ -1681,14 +1846,59 @@
                         显示已屏蔽微博的占位块
                     </label>
                 </div>
+                <div style="margin-bottom: 16px;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">右侧栏清理</div>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-hot-search" ${hideHotSearchEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽微博热搜
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-home-ads" ${hideHomeAdsEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽首页广告
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-interested-people" ${hideInterestedPeopleEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽你可能感兴趣的人
+                    </label>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">顶部导航清理</div>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-top-recommend" ${hideTopRecommendEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽顶栏推荐按钮
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-top-video" ${hideTopVideoEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽顶栏视频按钮
+                    </label>
+                </div>
+                <div style="margin-bottom: 16px;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">内容处理</div>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="auto-expand-enabled" ${autoExpandEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        自动展开微博正文
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="block-ai-content" ${blockAIContent ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽疑似AI生成的内容
+                    </label>
+                    <label style="display: block; margin: 12px 0 6px; color: var(--text-color, #333);">
+                        热搜页时间过滤（隐藏多少天之前的微博，0 为关闭）
+                    </label>
+                    <input type="number" id="time-filter-days"
+                        value="${timeFilterDays}"
+                        min="0" max="3650"
+                        style="width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; background: var(--input-bg, white); color: var(--input-color, #333);">
+                </div>
                 <div class="button-group">
                     <button class="close-btn">取消</button>
                     <button class="save-btn">保存</button>
                 </div>
                 <div class="help-text">
-                    <div><strong>设置说明:</strong></div>
-                    <div>• 屏蔽按钮: 在用户名旁显示"屏蔽"按钮,方便快速屏蔽用户</div>
-                    <div>• 占位块: 被屏蔽的微博会显示灰色提示框,取消则完全隐藏</div>
+                    <div><strong>设置说明：</strong></div>
+                    <div>• 右侧栏清理的三个开关会在保存后刷新页面应用</div>
+                    <div>• 时间过滤只对热搜微博详情页生效</div>
+                    <div>• 关键词、来源和用户ID请在“管理屏蔽关键词”里调整</div>
                 </div>
             </div>
         `;
@@ -1697,18 +1907,47 @@
         settingsModal.querySelector('.save-btn').addEventListener('click', function () {
             const newShowBlockButton = settingsModal.querySelector('#show-block-button').checked;
             const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
+            const newHideHotSearchEnabled = settingsModal.querySelector('#hide-hot-search').checked;
+            const newHideHomeAdsEnabled = settingsModal.querySelector('#hide-home-ads').checked;
+            const newHideInterestedPeopleEnabled = settingsModal.querySelector('#hide-interested-people').checked;
+            const newHideTopRecommendEnabled = settingsModal.querySelector('#hide-top-recommend').checked;
+            const newHideTopVideoEnabled = settingsModal.querySelector('#hide-top-video').checked;
+            const newAutoExpandEnabled = settingsModal.querySelector('#auto-expand-enabled').checked;
+            const newBlockAIContent = settingsModal.querySelector('#block-ai-content').checked;
+            const newTimeFilterDays = parseInt(settingsModal.querySelector('#time-filter-days').value, 10);
+
+            if (Number.isNaN(newTimeFilterDays) || newTimeFilterDays < 0) {
+                showNotification('请输入有效的时间过滤天数');
+                return;
+            }
 
             showBlockButton = newShowBlockButton;
             showPlaceholder = newShowPlaceholder;
+            hideHotSearchEnabled = newHideHotSearchEnabled;
+            hideHomeAdsEnabled = newHideHomeAdsEnabled;
+            hideInterestedPeopleEnabled = newHideInterestedPeopleEnabled;
+            hideTopRecommendEnabled = newHideTopRecommendEnabled;
+            hideTopVideoEnabled = newHideTopVideoEnabled;
+            autoExpandEnabled = newAutoExpandEnabled;
+            blockAIContent = newBlockAIContent;
+            timeFilterDays = newTimeFilterDays;
 
             GM_setValue(STORAGE_PREFIX + 'show_block_button', showBlockButton);
             GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
+            GM_setValue(STORAGE_PREFIX + 'hide_hot_search', hideHotSearchEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_home_ads', hideHomeAdsEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_interested_people', hideInterestedPeopleEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_top_recommend', hideTopRecommendEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_top_video', hideTopVideoEnabled);
+            GM_setValue(STORAGE_PREFIX + 'auto_expand', autoExpandEnabled);
+            GM_setValue(STORAGE_PREFIX + 'block_ai_content', blockAIContent);
+            GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
 
             // 关闭设置窗口
             overlay.remove();
             settingsModal.remove();
 
-            showNotification('显示设置已保存');
+            showNotification('功能设置已保存，正在刷新页面应用');
 
             // 重新执行屏蔽以应用新设置
             location.reload(); // 刷新页面以应用新设置
@@ -2122,6 +2361,8 @@
         }
 
         // 页面加载时执行一次
+        hideStandaloneSidebarWidgets();
+        hideTopNavButtons();
         hideContent();
 
         // 优化的MutationObserver - 精确监听，立即响应
@@ -2129,6 +2370,8 @@
             let needsProcessing = false;
             let needsAutoExpand = false;
             let needsCommentProcessing = false;
+            let needsStandaloneCleanup = false;
+            let needsTopNavCleanup = false;
 
             // 使用Set去重，避免重复处理同一元素
             const processedNodes = new Set();
@@ -2147,6 +2390,17 @@
                                 needsProcessing = true;
                             }
 
+                            if ((hideHotSearchEnabled && node.classList.contains('hotBand')) ||
+                                (hideHomeAdsEnabled && hasTipsAdClass(node)) ||
+                                (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node))) {
+                                needsStandaloneCleanup = true;
+                            }
+
+                            if ((hideTopRecommendEnabled && node.matches?.(SELECTORS.topRecommendLink)) ||
+                                (hideTopVideoEnabled && node.matches?.(SELECTORS.topVideoLink))) {
+                                needsTopNavCleanup = true;
+                            }
+
                             if (autoExpandEnabled && node.classList.contains('expand')) {
                                 needsAutoExpand = true;
                             }
@@ -2160,6 +2414,17 @@
                         if (node.querySelector) {
                             if (!needsProcessing && node.querySelector(SELECTORS.feedBody)) {
                                 needsProcessing = true;
+                            }
+                            if (!needsStandaloneCleanup &&
+                                ((hideHotSearchEnabled && node.querySelector(SELECTORS.hotBand)) ||
+                                    (hideHomeAdsEnabled && node.querySelector(SELECTORS.tipsAd)) ||
+                                    (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node)))) {
+                                needsStandaloneCleanup = true;
+                            }
+                            if (!needsTopNavCleanup &&
+                                ((hideTopRecommendEnabled && node.querySelector(SELECTORS.topRecommendLink)) ||
+                                    (hideTopVideoEnabled && node.querySelector(SELECTORS.topVideoLink)))) {
+                                needsTopNavCleanup = true;
                             }
                             if (autoExpandEnabled && !needsAutoExpand && node.querySelector(SELECTORS.expandButton)) {
                                 needsAutoExpand = true;
@@ -2175,6 +2440,12 @@
             // 立即处理，不使用节流
             if (needsProcessing) {
                 hideContent();
+            }
+            if (needsStandaloneCleanup) {
+                requestAnimationFrame(() => hideStandaloneSidebarWidgets());
+            }
+            if (needsTopNavCleanup) {
+                requestAnimationFrame(() => hideTopNavButtons());
             }
             if (needsAutoExpand) {
                 requestAnimationFrame(() => {
@@ -2229,6 +2500,8 @@
 
         observeScrollItems();
         setInterval(observeScrollItems, 2000); // 定期检查新元素
+        setInterval(hideStandaloneSidebarWidgets, 1500);
+        setInterval(hideTopNavButtons, 1500);
 
         // 初始化自动展开功能
         initAutoExpand();
