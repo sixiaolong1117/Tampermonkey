@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.27
-// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、统一功能设置和自动展开
+// @version      0.28
+// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开和自动切换深浅主题
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
 // @author       SI Xiaolong
@@ -55,6 +55,7 @@
     const DEFAULT_HIDE_TOP_RECOMMEND = true; // 默认隐藏顶栏推荐按钮
     const DEFAULT_HIDE_TOP_VIDEO = true;     // 默认隐藏顶栏视频按钮
     const DEFAULT_REDIRECT_HOME_TO_MYGROUPS = true; // 默认将微博首页跳转到最新微博分组
+    const DEFAULT_AUTO_SWITCH_THEME = true;  // 默认跟随系统深浅主题
     const MYGROUPS_REDIRECT_TARGET = 'https://weibo.com/mygroups?gid=110007969607960';
 
     // 提取 @version
@@ -112,6 +113,7 @@
         tipsAd: '[class^="TipsAd"], [class*=" TipsAd"]',
         topRecommendLink: 'a[href="/hot"]',
         topVideoLink: 'a[href="/tv"]',
+        colorModeButton: 'button[title="夜间模式"], button[title="日间模式"]',
         sideTitle: '.wbpro-side-tit'
     };
     // =================================================
@@ -132,10 +134,13 @@
     let hideTopRecommendEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_recommend', DEFAULT_HIDE_TOP_RECOMMEND);
     let hideTopVideoEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_video', DEFAULT_HIDE_TOP_VIDEO);
     let redirectHomeToMyGroupsEnabled = GM_getValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', DEFAULT_REDIRECT_HOME_TO_MYGROUPS);
+    let autoSwitchThemeEnabled = GM_getValue(STORAGE_PREFIX + 'auto_switch_theme', DEFAULT_AUTO_SWITCH_THEME);
     const AUTO_EXPAND_SCROLL_IDLE_MS = 700;
     let lastScrollTime = 0;
     let autoExpandTimer = null;
     let autoExpandIntervalId = null;
+    let themeSwitchTimer = null;
+    let colorSchemeListenerInitialized = false;
     const autoExpandedFeedIdentities = new Set();
 
     // WebDAV配置
@@ -470,6 +475,7 @@
         `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
         `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
         `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
+        `💡 功能: 自动主题${autoSwitchThemeEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
         `💡 功能: AI内容屏蔽${blockAIContent ? '已启用' : '未启用，可在菜单中开启'}`
     );
 
@@ -485,6 +491,7 @@
             `🧹 右侧栏清理: 热搜${hideHotSearchEnabled ? '开' : '关'} / 首页广告${hideHomeAdsEnabled ? '开' : '关'} / 感兴趣的人${hideInterestedPeopleEnabled ? '开' : '关'}\n` +
             `🧭 顶部导航清理: 推荐${hideTopRecommendEnabled ? '开' : '关'} / 视频${hideTopVideoEnabled ? '开' : '关'}\n` +
             `📱 自动展开: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
+            `🎨 自动主题: ${autoSwitchThemeEnabled ? '已启用' : '未启用'}\n` +
             `🤖 AI内容屏蔽: ${blockAIContent ? '已启用' : '未启用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
@@ -528,6 +535,68 @@
 
         location.replace(MYGROUPS_REDIRECT_TARGET);
         return true;
+    }
+
+    function getSystemColorScheme() {
+        return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function toggleColorMode() {
+        if (!autoSwitchThemeEnabled) {
+            return false;
+        }
+
+        const systemMode = getSystemColorScheme();
+        const targetMode = systemMode === 'dark' ? '夜间模式' : '日间模式';
+        const buttons = document.querySelectorAll(SELECTORS.colorModeButton);
+
+        for (const button of buttons) {
+            if (button.title === targetMode) {
+                console.log(`🎨 检测到系统为${systemMode}模式，切换微博到${targetMode}`);
+                button.click();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function scheduleThemeSwitch(delay = 100) {
+        if (!autoSwitchThemeEnabled) {
+            return;
+        }
+
+        clearTimeout(themeSwitchTimer);
+        themeSwitchTimer = setTimeout(toggleColorMode, delay);
+    }
+
+    function initColorSchemeListener() {
+        if (colorSchemeListenerInitialized || !window.matchMedia) {
+            return;
+        }
+
+        const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        const onColorSchemeChange = () => {
+            console.log('🎨 系统颜色模式发生变化，重新调整微博主题');
+            scheduleThemeSwitch(100);
+        };
+
+        if (colorSchemeQuery.addEventListener) {
+            colorSchemeQuery.addEventListener('change', onColorSchemeChange);
+        } else if (colorSchemeQuery.addListener) {
+            colorSchemeQuery.addListener(onColorSchemeChange);
+        }
+
+        colorSchemeListenerInitialized = true;
+    }
+
+    function initAutoThemeSwitch() {
+        if (!autoSwitchThemeEnabled) {
+            return;
+        }
+
+        scheduleThemeSwitch(500);
+        initColorSchemeListener();
     }
 
     // 显示WebDAV配置界面
@@ -1964,6 +2033,13 @@
                     </div>
                 </div>
                 <div style="margin-bottom: 16px;">
+                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">外观</div>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="auto-switch-theme" ${autoSwitchThemeEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        跟随系统自动切换微博日间/夜间模式
+                    </label>
+                </div>
+                <div style="margin-bottom: 16px;">
                     <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">右侧栏清理</div>
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="hide-hot-search" ${hideHotSearchEnabled ? 'checked' : ''} style="margin-right: 8px;">
@@ -2025,6 +2101,7 @@
             const newShowBlockButton = settingsModal.querySelector('#show-block-button').checked;
             const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
             const newRedirectHomeToMyGroupsEnabled = settingsModal.querySelector('#redirect-home-to-mygroups').checked;
+            const newAutoSwitchThemeEnabled = settingsModal.querySelector('#auto-switch-theme').checked;
             const newHideHotSearchEnabled = settingsModal.querySelector('#hide-hot-search').checked;
             const newHideHomeAdsEnabled = settingsModal.querySelector('#hide-home-ads').checked;
             const newHideInterestedPeopleEnabled = settingsModal.querySelector('#hide-interested-people').checked;
@@ -2042,6 +2119,7 @@
             showBlockButton = newShowBlockButton;
             showPlaceholder = newShowPlaceholder;
             redirectHomeToMyGroupsEnabled = newRedirectHomeToMyGroupsEnabled;
+            autoSwitchThemeEnabled = newAutoSwitchThemeEnabled;
             hideHotSearchEnabled = newHideHotSearchEnabled;
             hideHomeAdsEnabled = newHideHomeAdsEnabled;
             hideInterestedPeopleEnabled = newHideInterestedPeopleEnabled;
@@ -2054,6 +2132,7 @@
             GM_setValue(STORAGE_PREFIX + 'show_block_button', showBlockButton);
             GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
             GM_setValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', redirectHomeToMyGroupsEnabled);
+            GM_setValue(STORAGE_PREFIX + 'auto_switch_theme', autoSwitchThemeEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_hot_search', hideHotSearchEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_home_ads', hideHomeAdsEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_interested_people', hideInterestedPeopleEnabled);
@@ -2582,6 +2661,7 @@
             let needsCommentProcessing = false;
             let needsStandaloneCleanup = false;
             let needsTopNavCleanup = false;
+            let needsThemeSwitch = false;
 
             // 使用Set去重，避免重复处理同一元素
             const processedNodes = new Set();
@@ -2611,6 +2691,10 @@
                                 needsTopNavCleanup = true;
                             }
 
+                            if (autoSwitchThemeEnabled && node.matches?.(SELECTORS.colorModeButton)) {
+                                needsThemeSwitch = true;
+                            }
+
                             if (autoExpandEnabled && node.classList.contains('expand')) {
                                 needsAutoExpand = true;
                             }
@@ -2636,6 +2720,9 @@
                                     (hideTopVideoEnabled && node.querySelector(SELECTORS.topVideoLink)))) {
                                 needsTopNavCleanup = true;
                             }
+                            if (autoSwitchThemeEnabled && !needsThemeSwitch && node.querySelector(SELECTORS.colorModeButton)) {
+                                needsThemeSwitch = true;
+                            }
                             if (autoExpandEnabled && !needsAutoExpand && node.querySelector(SELECTORS.expandButton)) {
                                 needsAutoExpand = true;
                             }
@@ -2656,6 +2743,9 @@
             }
             if (needsTopNavCleanup) {
                 requestAnimationFrame(() => hideTopNavButtons());
+            }
+            if (needsThemeSwitch) {
+                requestAnimationFrame(() => scheduleThemeSwitch());
             }
             if (needsAutoExpand) {
                 scheduleAutoExpand();
@@ -2712,8 +2802,12 @@
 
         // 初始化自动展开功能
         initAutoExpand();
+        initAutoThemeSwitch();
 
         // 添加全局函数
+        window.manualToggleColorMode = toggleColorMode;
+        window.syncWeiboColorMode = toggleColorMode;
+
         window.getHiddenStats = function () {
             const tagStats = hiddenDetails.filter(d => d.type === '推荐标签').length;
             const keywordStats = hiddenDetails.filter(d => d.type === '关键词').length;
@@ -2749,7 +2843,8 @@
             `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
             `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
             `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
-            `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}`
+            `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
+            `💡 功能: 自动主题${autoSwitchThemeEnabled ? '已启用' : '未启用，可在菜单中开启'}`
         );
     }
 
