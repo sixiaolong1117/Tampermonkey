@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.15
+// @version      0.16
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -13,6 +13,7 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -35,6 +36,17 @@
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
     const DEFAULT_ENABLE_SEARCH_FILTER = false;  // 默认不在搜索页过滤
+
+    const SELECTORS = {
+        contentItem: '.ContentItem',
+        contentTitle: '.ContentItem-title',
+        titleLink: '.ContentItem-title a',
+        answerItem: '.AnswerItem, .ContentItem.AnswerItem',
+        advertCard: '.TopstoryItem--advertCard',
+        authorInfo: '.AuthorInfo, .AnswerItem-authorInfo',
+        virtualItem: '.TopstoryItem, .List-item, .SearchResult-Card',
+        dateCreated: 'meta[itemprop="dateCreated"]'
+    };
 
     // 提取 @version
     const SCRIPT_VERSION = GM_info.script.version || 'unknown';
@@ -87,18 +99,14 @@
         }
 
         /* 其他现有样式保持不变 */
-        .time-filter-hidden-message {
-            margin: 10px 0;
-            padding: 15px;
-            text-align: center;
-            border: 1px solid;
-            border-radius: 6px;
-            font-size: 14px;
-            background: var(--time-filter-bg, #fff3cd);
-            color: var(--time-filter-color, #856404);
-            border-color: var(--time-filter-border, #ffeaa7);
+        .zhihu-blocked-item-hidden {
+            display: none !important;
         }
-        .time-filter-hidden-message {
+        .zhihu-blocked-item-with-placeholder {
+            display: block !important;
+        }
+        .time-filter-hidden-message,
+        .custom-hidden-message {
             margin: 10px 0;
             padding: 15px;
             text-align: center;
@@ -143,14 +151,6 @@
                 color: #ff6b00;
                 background: rgba(255, 107, 0, 0.1);
             }
-        }
-        .custom-hidden-message {
-            margin: 10px 0;
-            padding: 15px;
-            text-align: center;
-            border: 1px solid;
-            border-radius: 6px;
-            font-size: 14px;
         }
         .ContentItem-title {
             display: flex;
@@ -298,9 +298,27 @@
     `;
 
     // 添加样式到页面
-    const styleSheet = document.createElement('style');
-    styleSheet.textContent = styles;
-    document.head.appendChild(styleSheet);
+    appendStyle(styles);
+
+    function appendStyle(css) {
+        const style = document.createElement('style');
+        style.textContent = css;
+
+        const append = () => {
+            const parent = document.head || document.documentElement;
+            if (parent && !style.parentNode) {
+                parent.appendChild(style);
+            }
+        };
+
+        if (document.head || document.documentElement) {
+            append();
+        } else {
+            document.addEventListener('DOMContentLoaded', append, { once: true });
+        }
+
+        return style;
+    }
 
     // 在控制台输出隐藏信息
     function logHiddenContent(matchedKeyword, questionText, element, matchType, source = '自动屏蔽') {
@@ -692,6 +710,44 @@
         return element.dataset.blockProcessed && element.dataset.blockProcessed.includes(type + ',');
     }
 
+    function hideElementWithMessage(element, message, reason = 'main', messageClass = 'custom-hidden-message') {
+        if (!element || element.classList.contains('custom-hidden') || isProcessed(element, reason)) {
+            return false;
+        }
+
+        element.classList.add('custom-hidden');
+        markAsProcessed(element, reason);
+
+        if (showPlaceholder) {
+            const placeholder = document.createElement('div');
+            placeholder.className = messageClass;
+            placeholder.textContent = message;
+
+            const outerContainer = element.closest(SELECTORS.virtualItem);
+            if (outerContainer && outerContainer !== element) {
+                outerContainer.classList.add('zhihu-blocked-item-with-placeholder');
+                Array.from(outerContainer.children).forEach(child => {
+                    if (child !== element &&
+                        !child.classList.contains('custom-hidden-message') &&
+                        !child.classList.contains('time-filter-hidden-message')) {
+                        child.style.display = 'none';
+                    }
+                });
+                element.style.display = 'none';
+                outerContainer.appendChild(placeholder);
+            } else if (element.parentNode) {
+                element.parentNode.replaceChild(placeholder, element);
+            } else {
+                element.style.display = 'none';
+            }
+        } else {
+            const outerContainer = element.closest(SELECTORS.virtualItem);
+            (outerContainer || element).classList.add('zhihu-blocked-item-hidden');
+        }
+
+        return true;
+    }
+
     // 保存关键词函数
     function saveKeywordsAndSync(newKeywords, reason = '手动修改') {
         keywords = Array.isArray(newKeywords) ? newKeywords : [];
@@ -897,7 +953,7 @@
             return;
         }
 
-        const questionTitles = document.querySelectorAll('.ContentItem-title');
+        const questionTitles = document.querySelectorAll(SELECTORS.contentTitle);
 
         questionTitles.forEach(titleElement => {
             // 检查是否已经添加过按钮
@@ -939,24 +995,8 @@
                 }
 
                 // 隐藏该问题
-                const contentItem = titleElement.closest('.ContentItem');
-                if (contentItem && !contentItem.classList.contains('custom-hidden')) {
-                    contentItem.classList.add('custom-hidden');
-
-                    // 根据设置决定是否显示占位块
-                    if (showPlaceholder) {
-                        // 创建提示元素
-                        const message = document.createElement('div');
-                        message.className = 'custom-hidden-message';
-                        message.innerHTML = `🚫 已手动屏蔽问题: "${cleanedText}"`;
-
-                        // 替换原始内容
-                        contentItem.parentNode.replaceChild(message, contentItem);
-                    } else {
-                        // 完全隐藏内容
-                        contentItem.style.display = 'none';
-                    }
-
+                const contentItem = titleElement.closest(SELECTORS.contentItem);
+                if (hideElementWithMessage(contentItem, `已手动屏蔽问题: "${cleanedText}"`, 'manual')) {
                     // 记录到控制台
                     logHiddenContent(cleanedText, cleanedText, contentItem, '手动添加', '手动屏蔽');
                 }
@@ -966,7 +1006,7 @@
             titleElement.appendChild(blockBtn);
 
             // 添加屏蔽作者按钮
-            const contentItem = titleElement.closest('.ContentItem');
+            const contentItem = titleElement.closest(SELECTORS.contentItem);
             if (contentItem) {
                 const authorName = getAuthorNameFromElement(contentItem);
                 if (authorName) {
@@ -986,20 +1026,7 @@
                             showNotification(`已屏蔽作者: "${authorName}"`);
                         }
 
-                        if (!contentItem.classList.contains('custom-hidden')) {
-                            contentItem.classList.add('custom-hidden');
-
-                            // 根据设置决定是否显示占位块
-                            if (showPlaceholder) {
-                                const message = document.createElement('div');
-                                message.className = 'custom-hidden-message';
-                                message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
-                                contentItem.parentNode.replaceChild(message, contentItem);
-                            } else {
-                                // 完全隐藏内容
-                                contentItem.style.display = 'none';
-                            }
-
+                        if (hideElementWithMessage(contentItem, `已屏蔽作者: "${authorName}"`, 'manual-user')) {
                             logHiddenContent(authorName, `作者: ${authorName}`, contentItem, '用户屏蔽', '手动屏蔽');
                         }
                     });
@@ -1012,26 +1039,10 @@
 
     // 隐藏广告卡片
     function hideAdvertCards() {
-        const advertCards = document.querySelectorAll('.TopstoryItem--advertCard');
+        const advertCards = document.querySelectorAll(SELECTORS.advertCard);
 
         advertCards.forEach(card => {
-            if (!card.classList.contains('custom-hidden')) {
-                card.classList.add('custom-hidden');
-
-                // 根据设置决定是否显示占位块
-                if (showPlaceholder) {
-                    // 创建提示元素
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = '🚫 已隐藏广告卡片';
-
-                    // 替换原始内容
-                    card.parentNode.replaceChild(message, card);
-                } else {
-                    // 完全隐藏内容
-                    card.style.display = 'none';
-                }
-
+            if (hideElementWithMessage(card, '已隐藏广告卡片', 'advert')) {
                 // 记录到控制台
                 logHiddenContent('TopstoryItem--advertCard', '广告卡片', card, '广告卡片', '自动屏蔽');
             }
@@ -1063,7 +1074,7 @@
         addBlockButtons();
 
         // 然后执行自动屏蔽
-        const contentItems = document.querySelectorAll('.ContentItem');
+        const contentItems = document.querySelectorAll(SELECTORS.contentItem);
 
         contentItems.forEach(contentItem => {
             // ✅ 跳过已处理的元素
@@ -1074,68 +1085,33 @@
             // 用户屏蔽
             const authorName = getAuthorNameFromElement(contentItem);
             if (authorName && isUserBlocked(authorName)) {
-                contentItem.classList.add('custom-hidden');
-                markAsProcessed(contentItem, 'main'); // 标记已处理
-
-                // 根据设置决定是否显示占位块
-                if (showPlaceholder) {
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `🚫 已屏蔽作者: "${authorName}"`;
-                    contentItem.parentNode.replaceChild(message, contentItem);
-                } else {
-                    // 完全隐藏内容
-                    contentItem.style.display = 'none';
+                if (hideElementWithMessage(contentItem, `已屏蔽作者: "${authorName}"`, 'main-user')) {
+                    logHiddenContent(authorName, `作者: ${authorName}`, contentItem, '用户屏蔽', '自动屏蔽');
                 }
-
-                logHiddenContent(authorName, `作者: ${authorName}`, contentItem, '用户屏蔽', '自动屏蔽');
                 return;
             }
 
             // 时间屏蔽
             if (isAnswerTooOld(contentItem)) {
-                contentItem.classList.add('custom-hidden');
-                markAsProcessed(contentItem, 'main');
-
-                // 根据设置决定是否显示占位块
-                if (showPlaceholder) {
-                    const message = document.createElement('div');
-                    message.className = 'time-filter-hidden-message';
-                    message.innerHTML = `⏰ 已隐藏 ${timeFilterDays} 天前的回答`;
-                    contentItem.parentNode.replaceChild(message, contentItem);
-                } else {
-                    // 完全隐藏内容
-                    contentItem.style.display = 'none';
+                if (hideElementWithMessage(contentItem, `已隐藏 ${timeFilterDays} 天前的回答`, 'main-time', 'time-filter-hidden-message')) {
+                    logHiddenContent(`${timeFilterDays}天前`, '时间过滤', contentItem, '时间过滤', '自动屏蔽');
                 }
-
-                logHiddenContent(`${timeFilterDays}天前`, '时间过滤', contentItem, '时间过滤', '自动屏蔽');
                 return;
             }
 
             // 关键词屏蔽
-            const titleElement = contentItem.querySelector('.ContentItem-title a');
+            const titleElement = contentItem.querySelector(SELECTORS.titleLink);
             if (titleElement) {
                 const questionText = titleElement.textContent.trim();
                 const matchResult = isTextMatched(questionText);
 
                 if (matchResult) {
-                    contentItem.classList.add('custom-hidden');
-                    markAsProcessed(contentItem, 'main');
                     let displayKeyword = matchResult.keyword;
                     let matchType = matchResult.type === 'regex' ? '正则表达式' : '普通关键词';
 
-                    // 根据设置决定是否显示占位块
-                    if (showPlaceholder) {
-                        const message = document.createElement('div');
-                        message.className = 'custom-hidden-message';
-                        message.innerHTML = `🚫 已隐藏包含"${displayKeyword}"的问题`;
-                        contentItem.parentNode.replaceChild(message, contentItem);
-                    } else {
-                        // 完全隐藏内容
-                        contentItem.style.display = 'none';
+                    if (hideElementWithMessage(contentItem, `已隐藏包含"${displayKeyword}"的问题`, 'main-keyword')) {
+                        logHiddenContent(matchResult.keyword, questionText, contentItem, matchType, '自动屏蔽');
                     }
-
-                    logHiddenContent(matchResult.keyword, questionText, contentItem, matchType, '自动屏蔽');
                 }
             }
         });
@@ -1314,7 +1290,7 @@
         if (timeFilterDays <= 0) return false;
 
         // 查找日期元素
-        const dateMeta = contentItem.querySelector('meta[itemprop="dateCreated"]');
+        const dateMeta = contentItem.querySelector(SELECTORS.dateCreated);
         if (!dateMeta) return false;
 
         const dateString = dateMeta.getAttribute('content');
@@ -1392,45 +1368,67 @@
 
     // 检查当前页面是否在主站（允许执行屏蔽功能）
     function isMainZhihuSite() {
-        const currentUrl = window.location.href;
+        const currentUrl = new URL(window.location.href);
+        if (!['www.zhihu.com', 'zhihu.com'].includes(currentUrl.hostname)) {
+            return false;
+        }
+
+        const pathname = currentUrl.pathname;
 
         // 排除用户主页路径
-        if (currentUrl.includes('/people/')) {
+        if (pathname.startsWith('/people/')) {
             return false;
         }
 
         // 排除问题详情页
-        if (currentUrl.includes('/question/')) {
+        if (pathname.startsWith('/question/')) {
             return false;
         }
 
         // 搜索页：根据开关决定是否启用
-        if (currentUrl.includes('/search?')) {
+        if (pathname === '/search') {
             return enableSearchFilter;
         }
 
-        const mainSites = [
-            'https://www.zhihu.com',
-            'https://www.zhihu.com/?theme=light',
-            'https://www.zhihu.com/?theme=dark',
-            'https://zhihu.com',
-            'https://zhihu.com/?theme=light',
-            'https://zhihu.com/?theme=dark',
-            'https://www.zhihu.com/follow',
-            'https://www.zhihu.com/hot',
-            'https://www.zhihu.com/explore'
-        ];
-
-        return mainSites.some(site => currentUrl.startsWith(site)) ||
-            currentUrl === 'https://www.zhihu.com/' ||
-            currentUrl === 'https://zhihu.com/';
+        const allowedPaths = ['/', '/follow', '/hot', '/explore'];
+        return allowedPaths.includes(pathname);
     }
 
-    // 使用防抖避免频繁执行
-    let timeoutId;
-    function debouncedHide() {
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(hideQuestions, 100);
+    let lastHideTime = 0;
+    let pendingHide = false;
+    function throttledHide() {
+        const now = Date.now();
+        const timeSinceLastHide = now - lastHideTime;
+
+        if (timeSinceLastHide >= 80) {
+            lastHideTime = now;
+            pendingHide = false;
+            hideQuestions();
+        } else if (!pendingHide) {
+            pendingHide = true;
+            setTimeout(() => {
+                if (pendingHide) {
+                    lastHideTime = Date.now();
+                    pendingHide = false;
+                    hideQuestions();
+                }
+            }, 80 - timeSinceLastHide);
+        }
+    }
+
+    function nodeMatchesAny(node, selectors) {
+        if (!node || node.nodeType !== 1) return false;
+        return selectors.some(selector => node.matches?.(selector) || node.querySelector?.(selector));
+    }
+
+    function shouldProcessAddedNode(node) {
+        return nodeMatchesAny(node, [
+            SELECTORS.contentItem,
+            SELECTORS.answerItem,
+            SELECTORS.advertCard,
+            SELECTORS.virtualItem,
+            SELECTORS.contentTitle
+        ]);
     }
 
     // 输出脚本信息
@@ -1561,7 +1559,7 @@
         }
 
         // 选择所有回答项
-        const answerItems = document.querySelectorAll('.AnswerItem, .ContentItem.AnswerItem');
+        const answerItems = document.querySelectorAll(SELECTORS.answerItem);
 
         answerItems.forEach(answerItem => {
             // 跳过已处理的回答
@@ -1576,23 +1574,9 @@
             const authorName = getAuthorNameFromElement(answerItem);
 
             if (authorName && isUserBlocked(authorName)) {
-                answerItem.classList.add('custom-hidden');
-
-                // 根据设置决定是否显示占位块
-                if (showPlaceholder) {
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `🚫 已屏蔽作者"${authorName}"的回答`;
-                    message.style.margin = '10px 0';
-
-                    // 替换回答内容
-                    answerItem.parentNode.replaceChild(message, answerItem);
-                } else {
-                    // 完全隐藏
-                    answerItem.style.display = 'none';
+                if (hideElementWithMessage(answerItem, `已屏蔽作者"${authorName}"的回答`, 'answer-user')) {
+                    logHiddenContent(authorName, `作者: ${authorName}的回答`, answerItem, '用户屏蔽', '自动屏蔽');
                 }
-
-                logHiddenContent(authorName, `作者: ${authorName}的回答`, answerItem, '用户屏蔽', '自动屏蔽');
             } else if (authorName) {
                 // 为未屏蔽的回答添加屏蔽按钮
                 addBlockButtonToAnswer(answerItem, authorName);
@@ -1613,7 +1597,7 @@
         }
 
         // 查找作者信息区域
-        const authorInfo = answerItem.querySelector('.AuthorInfo, .AnswerItem-authorInfo');
+        const authorInfo = answerItem.querySelector(SELECTORS.authorInfo);
         if (!authorInfo) {
             return;
         }
@@ -1637,19 +1621,7 @@
             }
 
             // 隐藏当前回答
-            if (!answerItem.classList.contains('custom-hidden')) {
-                answerItem.classList.add('custom-hidden');
-
-                if (showPlaceholder) {
-                    const message = document.createElement('div');
-                    message.className = 'custom-hidden-message';
-                    message.innerHTML = `🚫 已屏蔽作者"${authorName}"的回答`;
-                    message.style.margin = '10px 0';
-                    answerItem.parentNode.replaceChild(message, answerItem);
-                } else {
-                    answerItem.style.display = 'none';
-                }
-
+            if (hideElementWithMessage(answerItem, `已屏蔽作者"${authorName}"的回答`, 'manual-answer-user')) {
                 logHiddenContent(authorName, `作者: ${authorName}的回答`, answerItem, '用户屏蔽', '手动屏蔽');
             }
         });
@@ -1720,23 +1692,22 @@
         // 页面加载时执行一次
         hideQuestions();
 
-        // ✅ 优化后的 MutationObserver - 只监听必要的DOM变化
+        // 优化后的 MutationObserver - 只监听必要的DOM变化
         const observer = new MutationObserver((mutations) => {
             let shouldProcess = false;
+            const processedNodes = new Set();
 
             for (const mutation of mutations) {
-                // 只处理新增的节点
                 if (mutation.addedNodes.length > 0) {
                     for (const node of mutation.addedNodes) {
-                        if (node.nodeType === 1) { // 元素节点
-                            // 检查是否是知乎内容节点
-                            if (node.classList && (
-                                node.classList.contains('ContentItem') ||
-                                node.querySelector('.ContentItem')
-                            )) {
-                                shouldProcess = true;
-                                break;
-                            }
+                        if (node.nodeType !== 1 || processedNodes.has(node)) {
+                            continue;
+                        }
+                        processedNodes.add(node);
+
+                        if (shouldProcessAddedNode(node)) {
+                            shouldProcess = true;
+                            break;
                         }
                     }
                 }
@@ -1744,7 +1715,7 @@
             }
 
             if (shouldProcess) {
-                debouncedHide();
+                throttledHide();
             }
         });
 
@@ -1752,8 +1723,44 @@
             childList: true,
             subtree: true,
             attributes: false, // 不监听属性变化
-            characterData: false // 不监听文本变化
+            characterData: false, // 不监听文本变化
+            attributeOldValue: false,
+            characterDataOldValue: false
         });
+
+        const intersectionObserver = new IntersectionObserver((entries) => {
+            let hasNewVisible = false;
+            entries.forEach(entry => {
+                if (entry.isIntersecting && !entry.target.classList.contains('custom-hidden')) {
+                    hasNewVisible = true;
+                }
+            });
+            if (hasNewVisible) {
+                throttledHide();
+            }
+        }, {
+            root: null,
+            rootMargin: '120px',
+            threshold: 0.01
+        });
+
+        const observeVisibleItems = () => {
+            document.querySelectorAll(`${SELECTORS.virtualItem}, ${SELECTORS.contentItem}, ${SELECTORS.answerItem}`).forEach(item => {
+                if (!item.dataset.zhihuBlockObserving) {
+                    intersectionObserver.observe(item);
+                    item.dataset.zhihuBlockObserving = 'true';
+                }
+            });
+        };
+
+        observeVisibleItems();
+        setInterval(observeVisibleItems, 2000);
+        setInterval(() => {
+            hideAdvertCards();
+            if (isQuestionPage) {
+                hideAnswersInQuestionPage();
+            }
+        }, 1500);
 
         // 添加全局函数以便在控制台手动查看统计
         window.getHiddenStats = function () {
