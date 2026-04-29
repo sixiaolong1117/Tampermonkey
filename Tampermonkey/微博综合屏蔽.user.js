@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.26
+// @version      0.27
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、统一功能设置和自动展开
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -24,6 +24,10 @@
         '荐读',
         '广告',
         '推荐'
+    ];
+
+    const AD_TAG_IMAGE_PATTERNS = [
+        /\/icon_auth_white\.png(?:[?#].*)?$/i
     ];
 
     // 默认关键词（可通过菜单修改）
@@ -1742,6 +1746,16 @@
     }
 
     // 通过标签屏蔽
+    function isAdTagImage(img) {
+        if (!img) {
+            return false;
+        }
+
+        const src = img.currentSrc || img.src || img.getAttribute('src') || '';
+        return src.startsWith('data:image/') ||
+            AD_TAG_IMAGE_PATTERNS.some(pattern => pattern.test(src));
+    }
+
     function hideByTags() {
         const tags = Array.from(document.querySelectorAll('*[class], [node-type="feed_list_top"]')).filter(el =>
             Array.from(el.classList).some(c => c.startsWith(SELECTORS.tagPrefix)) ||
@@ -1751,16 +1765,17 @@
         tags.forEach(tag => {
             const tagText = tag.textContent.trim();
             const img = tag.querySelector('img');
-            const hasBase64Img = img && img.src.startsWith('data:image/');
+            const hasAdTagImage = isAdTagImage(img);
             const matchesKeyword = HIDDEN_TAGS.some(keyword => tagText.includes(keyword));
 
-            if (matchesKeyword || hasBase64Img) {
+            if (matchesKeyword || hasAdTagImage) {
                 const feedBody = tag.closest(SELECTORS.panelMain)?.querySelector(SELECTORS.feedBody) ||
                     tag.closest(SELECTORS.cardWrap)?.querySelector(SELECTORS.feedBody);
 
-                const message = `已隐藏包含"${tagText}"标签的内容 ${hasBase64Img ? "(含广告图片)" : ""}`;
+                const displayTag = tagText || '广告图片标签';
+                const message = `已隐藏包含"${displayTag}"标签的内容 ${hasAdTagImage ? "(含广告图片)" : ""}`;
                 if (applyHiddenStyle(feedBody, message, 'tag')) {
-                    logHiddenContent('推荐标签', tagText, feedBody, hasBase64Img ? 'Base64图片' : tagText);
+                    logHiddenContent('推荐标签', displayTag, feedBody, hasAdTagImage ? (img.currentSrc || img.src || '广告图片') : displayTag);
                 }
             }
         });
