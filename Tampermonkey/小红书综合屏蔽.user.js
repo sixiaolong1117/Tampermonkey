@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         小红书综合屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.0.1
-// @description  屏蔽小红书发现页笔记内容，支持关键词、作者、用户ID、笔记ID和视频笔记屏蔽，适配深浅色模式
+// @version      0.0.2
+// @description  屏蔽小红书发现页和评论区内容，支持关键词、作者、用户ID、笔记ID和视频笔记屏蔽，适配深浅色模式
 // @author       SI Xiaolong
 // @match        https://www.xiaohongshu.com/explore*
 // @icon         https://www.xiaohongshu.com/favicon.ico
@@ -37,6 +37,7 @@
     const SELECTORS = {
         feedContainer: '#exploreFeeds',
         noteItem: 'section.note-item',
+        commentItem: '.comments-el .comment-item',
         title: '.footer .title',
         author: '.author',
         authorName: '.author .name',
@@ -140,6 +141,20 @@
         return match ? match[1] : '';
     }
 
+    function getUserIdFromLink(link) {
+        if (!link) {
+            return '';
+        }
+
+        const dataUserId = (link.dataset.userId || '').trim();
+        if (dataUserId) {
+            return dataUserId;
+        }
+
+        const match = link.getAttribute('href')?.match(/\/user\/profile\/([^/?#]+)/);
+        return match ? match[1] : '';
+    }
+
     function getNoteInfo(noteItem) {
         const titleElement = noteItem.querySelector(SELECTORS.title);
         const authorNameElement = noteItem.querySelector(SELECTORS.authorName);
@@ -150,6 +165,16 @@
             title: titleElement ? titleElement.textContent.trim() : '',
             author: authorNameElement ? authorNameElement.textContent.trim() : '',
             isVideo: Boolean(noteItem.querySelector(SELECTORS.playIcon))
+        };
+    }
+
+    function getCommentInfo(commentItem) {
+        const userLink = commentItem.querySelector('.author a.name[href*="/user/profile/"], .avatar a[href*="/user/profile/"]');
+        const authorElement = commentItem.querySelector('.author a.name');
+
+        return {
+            userId: getUserIdFromLink(userLink),
+            author: authorElement ? authorElement.textContent.trim() : ''
         };
     }
 
@@ -180,6 +205,23 @@
 
         if (getValue(CONFIG_KEYS.BLOCK_VIDEOS, DEFAULTS.BLOCK_VIDEOS) && info.isVideo) {
             return '视频笔记';
+        }
+
+        return '';
+    }
+
+    function getCommentBlockReason(commentItem) {
+        const info = getCommentInfo(commentItem);
+
+        const blockedUserIds = getBlockList(CONFIG_KEYS.USER_IDS);
+        if (info.userId && blockedUserIds.includes(info.userId)) {
+            return `用户ID: ${info.userId}`;
+        }
+
+        const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
+        const matchedAuthor = blockedAuthors.find(author => matchText(info.author, author));
+        if (matchedAuthor) {
+            return `作者: ${matchedAuthor}`;
         }
 
         return '';
@@ -224,7 +266,26 @@
         }
     }
 
+    function maskHtmlElement(element) {
+        if (!element) {
+            return;
+        }
+
+        if (element.dataset.xhsOriginalHtml === undefined) {
+            element.dataset.xhsOriginalHtml = element.innerHTML;
+        }
+
+        if (element.textContent !== '****') {
+            element.textContent = '****';
+        }
+    }
+
     function restoreMaskedContent(noteItem) {
+        noteItem.querySelectorAll('[data-xhs-original-html]').forEach(element => {
+            element.innerHTML = element.dataset.xhsOriginalHtml;
+            delete element.dataset.xhsOriginalHtml;
+        });
+
         noteItem.querySelectorAll('[data-xhs-original-text]').forEach(element => {
             element.textContent = element.dataset.xhsOriginalText;
             delete element.dataset.xhsOriginalText;
@@ -247,6 +308,43 @@
         applyBlockedState(noteItem, reason);
     }
 
+    function applyBlockedCommentState(commentItem, reason) {
+        const showPlaceholder = getValue(CONFIG_KEYS.SHOW_PLACEHOLDER, DEFAULTS.SHOW_PLACEHOLDER);
+        commentItem.dataset.xhsBlocked = 'true';
+        commentItem.dataset.xhsBlockReason = reason;
+        commentItem.classList.toggle('xhs-comment-blocked-with-placeholder', showPlaceholder);
+        commentItem.classList.toggle('xhs-comment-blocked-hidden', !showPlaceholder);
+
+        if (showPlaceholder) {
+            maskCommentContent(commentItem);
+        } else {
+            restoreMaskedContent(commentItem);
+        }
+    }
+
+    function maskCommentContent(commentItem) {
+        const authorElement = commentItem.querySelector('.author a.name');
+        const contentElement = commentItem.querySelector('.content .note-text');
+        const likeElement = commentItem.querySelector('.like-wrapper .count');
+        const replyElement = commentItem.querySelector('.reply .count');
+
+        maskTextElement(authorElement);
+        maskHtmlElement(contentElement);
+        maskTextElement(likeElement);
+        maskTextElement(replyElement);
+    }
+
+    function clearBlockedCommentState(commentItem) {
+        if (commentItem.dataset.xhsBlocked !== 'true') {
+            return;
+        }
+
+        delete commentItem.dataset.xhsBlocked;
+        delete commentItem.dataset.xhsBlockReason;
+        restoreMaskedContent(commentItem);
+        commentItem.classList.remove('xhs-comment-blocked-with-placeholder', 'xhs-comment-blocked-hidden');
+    }
+
     function scanAndBlockNotes() {
         hideStandaloneAnnoyances();
 
@@ -259,6 +357,18 @@
                 blockNote(noteItem, reason);
             } else {
                 clearBlockedState(noteItem);
+            }
+        });
+
+        const commentItems = document.querySelectorAll(SELECTORS.commentItem);
+        commentItems.forEach(commentItem => {
+            addCommentBlockButton(commentItem);
+
+            const reason = getCommentBlockReason(commentItem);
+            if (reason) {
+                applyBlockedCommentState(commentItem, reason);
+            } else {
+                clearBlockedCommentState(commentItem);
             }
         });
     }
@@ -312,6 +422,44 @@
 
         authorWrapper.appendChild(authorButton);
         noteItem.dataset.xhsButtonsAdded = 'true';
+    }
+
+    function addCommentBlockButton(commentItem) {
+        if (!getValue(CONFIG_KEYS.SHOW_BLOCK_BUTTON, DEFAULTS.SHOW_BLOCK_BUTTON)) {
+            commentItem.querySelectorAll('.xhs-comment-block-btn').forEach(button => button.remove());
+            return;
+        }
+
+        if (commentItem.dataset.xhsCommentButtonsAdded === 'true') {
+            return;
+        }
+
+        const authorWrapper = commentItem.querySelector('.author-wrapper');
+        if (!authorWrapper) {
+            return;
+        }
+
+        const userButton = createQuickButton('屏蔽用户', '屏蔽此评论用户');
+        userButton.classList.add('xhs-comment-block-btn');
+        userButton.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const info = getCommentInfo(commentItem);
+            const key = info.userId ? CONFIG_KEYS.USER_IDS : CONFIG_KEYS.AUTHORS;
+            const value = info.userId || info.author;
+            if (!value) {
+                showNotification('未识别到评论用户信息', 'info');
+                return;
+            }
+
+            const added = addToBlockList(key, value);
+            showNotification(added ? `已屏蔽用户: ${info.author || value}` : `用户已在屏蔽列表中: ${info.author || value}`, added ? 'success' : 'info');
+            scheduleScan();
+        });
+
+        authorWrapper.appendChild(userButton);
+        commentItem.dataset.xhsCommentButtonsAdded = 'true';
     }
 
     function createQuickButton(text, title) {
@@ -423,6 +571,7 @@
                 if (!getValue(CONFIG_KEYS.SHOW_BLOCK_BUTTON, DEFAULTS.SHOW_BLOCK_BUTTON)) {
                     document.querySelectorAll('.xhs-quick-block-btn').forEach(button => button.remove());
                     document.querySelectorAll(`${SELECTORS.noteItem}[data-xhs-buttons-added="true"]`).forEach(item => delete item.dataset.xhsButtonsAdded);
+                    document.querySelectorAll(`${SELECTORS.commentItem}[data-xhs-comment-buttons-added="true"]`).forEach(item => delete item.dataset.xhsCommentButtonsAdded);
                 }
             });
             bindSwitch('#xhs-show-placeholder', CONFIG_KEYS.SHOW_PLACEHOLDER);
@@ -533,6 +682,28 @@
             section.note-item.xhs-blocked-with-placeholder .play-icon,
             section.note-item.xhs-blocked-with-placeholder .like-icon,
             section.note-item.xhs-blocked-with-placeholder .like-lottie {
+                visibility: hidden !important;
+            }
+
+            .comment-item.xhs-comment-blocked-hidden {
+                display: none !important;
+            }
+
+            .comment-item.xhs-comment-blocked-with-placeholder {
+                position: relative;
+                padding: 8px 10px;
+                border: 1px solid var(--xhs-block-placeholder-border);
+                border-radius: 8px;
+                background: var(--xhs-block-placeholder-bg);
+                box-sizing: border-box;
+            }
+
+            .comment-item.xhs-comment-blocked-with-placeholder .avatar img,
+            .comment-item.xhs-comment-blocked-with-placeholder .comment-picture,
+            .comment-item.xhs-comment-blocked-with-placeholder .note-content-emoji,
+            .comment-item.xhs-comment-blocked-with-placeholder .like-icon,
+            .comment-item.xhs-comment-blocked-with-placeholder .like-lottie,
+            .comment-item.xhs-comment-blocked-with-placeholder .reply-icon {
                 visibility: hidden !important;
             }
 
