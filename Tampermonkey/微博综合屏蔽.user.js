@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.29
-// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开、自动切换深浅主题和微博将要访问页直接访问
+// @version      0.30
+// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
 // @author       SI Xiaolong
@@ -53,6 +53,8 @@
     const DEFAULT_HIDE_HOT_SEARCH = true;    // 默认隐藏热搜栏
     const DEFAULT_HIDE_HOME_ADS = true;      // 默认隐藏首页广告
     const DEFAULT_HIDE_INTERESTED_PEOPLE = true; // 默认隐藏可能感兴趣的人
+    const DEFAULT_HIDE_RIGHT_SIDEBAR = false; // 默认不隐藏整个右侧栏
+    const DEFAULT_HIDE_CREATOR_CENTER = true; // 默认隐藏右侧创作者中心
     const DEFAULT_HIDE_TOP_RECOMMEND = true; // 默认隐藏顶栏推荐按钮
     const DEFAULT_HIDE_TOP_VIDEO = true;     // 默认隐藏顶栏视频按钮
     const DEFAULT_REDIRECT_HOME_TO_MYGROUPS = true; // 默认将微博首页跳转到最新微博分组
@@ -112,6 +114,7 @@
         // 独立页面组件
         hotBand: '.hotBand',
         tipsAd: '[class^="TipsAd"], [class*=" TipsAd"]',
+        rightSidebar: '#__sidebar',
         topRecommendLink: 'a[href="/hot"]',
         topVideoLink: 'a[href="/tv"]',
         colorModeButton: 'button[title="夜间模式"], button[title="日间模式"]',
@@ -132,6 +135,8 @@
     let hideHotSearchEnabled = GM_getValue(STORAGE_PREFIX + 'hide_hot_search', DEFAULT_HIDE_HOT_SEARCH);
     let hideHomeAdsEnabled = GM_getValue(STORAGE_PREFIX + 'hide_home_ads', DEFAULT_HIDE_HOME_ADS);
     let hideInterestedPeopleEnabled = GM_getValue(STORAGE_PREFIX + 'hide_interested_people', DEFAULT_HIDE_INTERESTED_PEOPLE);
+    let hideRightSidebarEnabled = GM_getValue(STORAGE_PREFIX + 'hide_right_sidebar', DEFAULT_HIDE_RIGHT_SIDEBAR);
+    let hideCreatorCenterEnabled = GM_getValue(STORAGE_PREFIX + 'hide_creator_center', DEFAULT_HIDE_CREATOR_CENTER);
     let hideTopRecommendEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_recommend', DEFAULT_HIDE_TOP_RECOMMEND);
     let hideTopVideoEnabled = GM_getValue(STORAGE_PREFIX + 'hide_top_video', DEFAULT_HIDE_TOP_VIDEO);
     let redirectHomeToMyGroupsEnabled = GM_getValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', DEFAULT_REDIRECT_HOME_TO_MYGROUPS);
@@ -172,6 +177,7 @@
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
 
     const standaloneStyleSelectors = [
+        hideRightSidebarEnabled ? '#__sidebar' : '',
         hideHotSearchEnabled ? '.hotBand' : '',
         hideHomeAdsEnabled ? '[class^="TipsAd"], [class*=" TipsAd"]' : '',
         hideTopRecommendEnabled ? 'a[href="/hot"]' : '',
@@ -494,7 +500,7 @@
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
             `🏠 首页跳转: ${redirectHomeToMyGroupsEnabled ? '已启用' : '未启用'}\n` +
-            `🧹 右侧栏清理: 热搜${hideHotSearchEnabled ? '开' : '关'} / 首页广告${hideHomeAdsEnabled ? '开' : '关'} / 感兴趣的人${hideInterestedPeopleEnabled ? '开' : '关'}\n` +
+            `🧹 右侧栏清理: 整栏${hideRightSidebarEnabled ? '开' : '关'} / 热搜${hideHotSearchEnabled ? '开' : '关'} / 首页广告${hideHomeAdsEnabled ? '开' : '关'} / 感兴趣的人${hideInterestedPeopleEnabled ? '开' : '关'} / 创作者中心${hideCreatorCenterEnabled ? '开' : '关'}\n` +
             `🧭 顶部导航清理: 推荐${hideTopRecommendEnabled ? '开' : '关'} / 视频${hideTopVideoEnabled ? '开' : '关'}\n` +
             `📱 自动展开: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
             `🎨 自动主题: ${autoSwitchThemeEnabled ? '已启用' : '未启用'}\n` +
@@ -1724,7 +1730,7 @@
         return true;
     }
 
-    function findInterestedPeopleCards(root = document) {
+    function findSidebarCardsByTitle(root = document, titleText) {
         const cards = [];
         const titles = [];
 
@@ -1734,7 +1740,7 @@
         root.querySelectorAll?.(SELECTORS.sideTitle).forEach(title => titles.push(title));
 
         titles.forEach(title => {
-            if (!title.textContent.includes('你可能感兴趣的人')) return;
+            if (!title.textContent.includes(titleText)) return;
 
             const card = title.closest('.wbpro-side') || title.closest('.woo-panel-main');
             if (card) cards.push(card);
@@ -1743,20 +1749,65 @@
         return cards;
     }
 
-    function hasInterestedPeopleCard(root) {
+    function hasSidebarCardByTitle(root, titleText) {
         if (!root) return false;
-        if (root.nodeType === 1 && root.matches?.(SELECTORS.sideTitle) && root.textContent.includes('你可能感兴趣的人')) {
+        if (root.nodeType === 1 && root.matches?.(SELECTORS.sideTitle) && root.textContent.includes(titleText)) {
             return true;
         }
-        return Boolean(root.querySelector?.(SELECTORS.sideTitle) && root.textContent.includes('你可能感兴趣的人'));
+        return Boolean(root.querySelector?.(SELECTORS.sideTitle) && root.textContent.includes(titleText));
+    }
+
+    function findInterestedPeopleCards(root = document) {
+        return findSidebarCardsByTitle(root, '你可能感兴趣的人');
+    }
+
+    function hasInterestedPeopleCard(root) {
+        return hasSidebarCardByTitle(root, '你可能感兴趣的人');
+    }
+
+    function findCreatorCenterCards(root = document) {
+        return findSidebarCardsByTitle(root, '创作者中心');
+    }
+
+    function hasCreatorCenterCard(root) {
+        return hasSidebarCardByTitle(root, '创作者中心');
+    }
+
+    function findRightSidebarContainers(root = document) {
+        const sidebars = [];
+
+        if (root.nodeType === 1 && root.matches?.(SELECTORS.rightSidebar)) {
+            sidebars.push(root);
+        }
+        root.querySelectorAll?.(SELECTORS.rightSidebar).forEach(sidebar => sidebars.push(sidebar));
+
+        return sidebars.map(sidebar => {
+            const parent = sidebar.parentElement;
+            if (parent && [...parent.classList].some(className => /^_side_/.test(className))) {
+                return parent;
+            }
+            return sidebar;
+        });
+    }
+
+    function hasRightSidebar(root) {
+        if (!root) return false;
+        if (root.nodeType === 1 && root.matches?.(SELECTORS.rightSidebar)) {
+            return true;
+        }
+        return Boolean(root.querySelector?.(SELECTORS.rightSidebar));
     }
 
     function hideStandaloneSidebarWidgets(root = document) {
-        if (!hideHotSearchEnabled && !hideHomeAdsEnabled && !hideInterestedPeopleEnabled) {
+        if (!hideRightSidebarEnabled && !hideHotSearchEnabled && !hideHomeAdsEnabled && !hideInterestedPeopleEnabled && !hideCreatorCenterEnabled) {
             return;
         }
 
         const elements = [];
+
+        if (hideRightSidebarEnabled) {
+            elements.push(...findRightSidebarContainers(root));
+        }
 
         if (root.nodeType === 1) {
             if ((hideHotSearchEnabled && root.matches?.(SELECTORS.hotBand)) ||
@@ -1779,6 +1830,9 @@
         }
         if (hideInterestedPeopleEnabled) {
             elements.push(...findInterestedPeopleCards(root));
+        }
+        if (hideCreatorCenterEnabled) {
+            elements.push(...findCreatorCenterCards(root));
         }
 
         let hidden = 0;
@@ -2185,6 +2239,10 @@
                 <div style="margin-bottom: 16px;">
                     <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">右侧栏清理</div>
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-right-sidebar" ${hideRightSidebarEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽整个微博右侧栏
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="hide-hot-search" ${hideHotSearchEnabled ? 'checked' : ''} style="margin-right: 8px;">
                         屏蔽微博热搜
                     </label>
@@ -2195,6 +2253,10 @@
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="hide-interested-people" ${hideInterestedPeopleEnabled ? 'checked' : ''} style="margin-right: 8px;">
                         屏蔽你可能感兴趣的人
+                    </label>
+                    <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                        <input type="checkbox" id="hide-creator-center" ${hideCreatorCenterEnabled ? 'checked' : ''} style="margin-right: 8px;">
+                        屏蔽创作者中心
                     </label>
                 </div>
                 <div style="margin-bottom: 16px;">
@@ -2232,7 +2294,7 @@
                 </div>
                 <div class="help-text">
                     <div><strong>设置说明：</strong></div>
-                    <div>• 右侧栏清理的三个开关会在保存后刷新页面应用</div>
+                    <div>• 右侧栏清理开关会在保存后刷新页面应用</div>
                     <div>• 时间过滤只对热搜微博详情页生效</div>
                     <div>• 关键词、来源和用户ID请在“管理屏蔽关键词”里调整</div>
                 </div>
@@ -2245,9 +2307,11 @@
             const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
             const newRedirectHomeToMyGroupsEnabled = settingsModal.querySelector('#redirect-home-to-mygroups').checked;
             const newAutoSwitchThemeEnabled = settingsModal.querySelector('#auto-switch-theme').checked;
+            const newHideRightSidebarEnabled = settingsModal.querySelector('#hide-right-sidebar').checked;
             const newHideHotSearchEnabled = settingsModal.querySelector('#hide-hot-search').checked;
             const newHideHomeAdsEnabled = settingsModal.querySelector('#hide-home-ads').checked;
             const newHideInterestedPeopleEnabled = settingsModal.querySelector('#hide-interested-people').checked;
+            const newHideCreatorCenterEnabled = settingsModal.querySelector('#hide-creator-center').checked;
             const newHideTopRecommendEnabled = settingsModal.querySelector('#hide-top-recommend').checked;
             const newHideTopVideoEnabled = settingsModal.querySelector('#hide-top-video').checked;
             const newAutoExpandEnabled = settingsModal.querySelector('#auto-expand-enabled').checked;
@@ -2263,9 +2327,11 @@
             showPlaceholder = newShowPlaceholder;
             redirectHomeToMyGroupsEnabled = newRedirectHomeToMyGroupsEnabled;
             autoSwitchThemeEnabled = newAutoSwitchThemeEnabled;
+            hideRightSidebarEnabled = newHideRightSidebarEnabled;
             hideHotSearchEnabled = newHideHotSearchEnabled;
             hideHomeAdsEnabled = newHideHomeAdsEnabled;
             hideInterestedPeopleEnabled = newHideInterestedPeopleEnabled;
+            hideCreatorCenterEnabled = newHideCreatorCenterEnabled;
             hideTopRecommendEnabled = newHideTopRecommendEnabled;
             hideTopVideoEnabled = newHideTopVideoEnabled;
             autoExpandEnabled = newAutoExpandEnabled;
@@ -2276,9 +2342,11 @@
             GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
             GM_setValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', redirectHomeToMyGroupsEnabled);
             GM_setValue(STORAGE_PREFIX + 'auto_switch_theme', autoSwitchThemeEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_right_sidebar', hideRightSidebarEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_hot_search', hideHotSearchEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_home_ads', hideHomeAdsEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_interested_people', hideInterestedPeopleEnabled);
+            GM_setValue(STORAGE_PREFIX + 'hide_creator_center', hideCreatorCenterEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_top_recommend', hideTopRecommendEnabled);
             GM_setValue(STORAGE_PREFIX + 'hide_top_video', hideTopVideoEnabled);
             GM_setValue(STORAGE_PREFIX + 'auto_expand', autoExpandEnabled);
@@ -2823,9 +2891,11 @@
                                 needsProcessing = true;
                             }
 
-                            if ((hideHotSearchEnabled && node.classList.contains('hotBand')) ||
+                            if ((hideRightSidebarEnabled && hasRightSidebar(node)) ||
+                                (hideHotSearchEnabled && node.classList.contains('hotBand')) ||
                                 (hideHomeAdsEnabled && hasTipsAdClass(node)) ||
-                                (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node))) {
+                                (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node)) ||
+                                (hideCreatorCenterEnabled && hasCreatorCenterCard(node))) {
                                 needsStandaloneCleanup = true;
                             }
 
@@ -2853,9 +2923,11 @@
                                 needsProcessing = true;
                             }
                             if (!needsStandaloneCleanup &&
-                                ((hideHotSearchEnabled && node.querySelector(SELECTORS.hotBand)) ||
+                                ((hideRightSidebarEnabled && hasRightSidebar(node)) ||
+                                    (hideHotSearchEnabled && node.querySelector(SELECTORS.hotBand)) ||
                                     (hideHomeAdsEnabled && node.querySelector(SELECTORS.tipsAd)) ||
-                                    (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node)))) {
+                                    (hideInterestedPeopleEnabled && hasInterestedPeopleCard(node)) ||
+                                    (hideCreatorCenterEnabled && hasCreatorCenterCard(node)))) {
                                 needsStandaloneCleanup = true;
                             }
                             if (!needsTopNavCleanup &&
