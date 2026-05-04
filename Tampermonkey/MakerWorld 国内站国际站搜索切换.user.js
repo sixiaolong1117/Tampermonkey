@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MakerWorld 国内站国际站搜索切换
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.3
+// @version      0.4
 // @description  在 MakerWorld 搜索框旁边放置转到另一个网站的按钮（.com <-> .com.cn）
 // @license      MIT
 // @icon         https://makerworld.com.cn/favicon.ico
@@ -15,9 +15,19 @@
 (function () {
     'use strict';
 
-    const WRAPPER_CLASS = 'search-input-wrapper';
+    const BUTTON_CLASS = 'mw-switch-site-btn';
+    const STYLE_ID = 'mw-switch-site-style';
+    const SEARCH_CONTAINER_SELECTORS = [
+        '.search-input-container',
+        '.search-input-wrapper'
+    ];
+    const SEARCH_BOX_SELECTORS = [
+        '.search-input',
+        '.input-wrapper'
+    ];
     const POLL_INTERVAL = 500;
-    let injected = false;
+    const POLL_TIMEOUT = 15000;
+    let poller = null;
 
     function getTargetHost() {
         const hn = location.hostname.toLowerCase();
@@ -34,69 +44,108 @@
         }
     }
 
-    function setupWrapperStyles() {
-        const wrapperSelector = '.' + WRAPPER_CLASS.split(' ').join('.');
-        const wrapper = document.querySelector(wrapperSelector);
-        if (wrapper) {
-            // 设置为相对定位，以便按钮绝对定位
-            wrapper.style.position = 'relative';
+    function injectStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        const style = document.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `
+            .mw-switch-site-host {
+                display: flex !important;
+                align-items: center !important;
+                gap: 8px !important;
+                flex-direction: row !important;
+                flex-wrap: nowrap !important;
+                min-width: 0 !important;
+            }
+
+            .mw-switch-site-host > :not(.${BUTTON_CLASS}) {
+                flex: 1 1 auto !important;
+                min-width: 0 !important;
+            }
+
+            .${BUTTON_CLASS} {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                height: 40px;
+                min-width: 92px;
+                padding: 0 15px;
+                margin: 0;
+                font-size: 13px;
+                font-weight: 600;
+                line-height: 1;
+                border-radius: 8px;
+                border: 1px solid rgba(57, 170, 0, 0.36);
+                background: rgba(57, 170, 0, 0.08);
+                color: var(--mui-palette-primary-main, #39AA00);
+                cursor: pointer;
+                flex: 0 0 auto;
+                box-sizing: border-box;
+                user-select: none;
+                transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+                white-space: nowrap;
+                box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+            }
+
+            .${BUTTON_CLASS}:hover {
+                border-color: rgba(57, 170, 0, 0.55);
+                background: rgba(57, 170, 0, 0.12);
+                transform: translateY(-1px);
+            }
+
+            .${BUTTON_CLASS}:active {
+                transform: translateY(0);
+                background: rgba(57, 170, 0, 0.16);
+            }
+
+            .${BUTTON_CLASS}:focus-visible {
+                outline: 2px solid rgba(57, 170, 0, 0.65);
+                outline-offset: 2px;
+            }
+
+            @media (max-width: 767px) {
+                .${BUTTON_CLASS} {
+                    min-width: 58px;
+                    padding: 0 10px;
+                    font-size: 12px;
+                    height: 36px;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function queryFirst(selectors, root = document) {
+        for (const selector of selectors) {
+            const node = root.querySelector(selector);
+            if (node) return node;
         }
+        return null;
+    }
+
+    function findSearchHost() {
+        const container = queryFirst(SEARCH_CONTAINER_SELECTORS);
+        if (!container) return null;
+
+        if (container.matches('.search-input-container')) {
+            return container;
+        }
+
+        const searchBox = queryFirst(SEARCH_BOX_SELECTORS, container);
+        if (searchBox && searchBox.parentElement) {
+            return searchBox.parentElement;
+        }
+
+        return container;
     }
 
     function createButton(targetHost) {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'mw-switch-site-btn';
+        btn.className = BUTTON_CLASS;
         btn.textContent = targetHost.endsWith('.com') ? '转到 .com' : '转到 .com.cn';
         btn.title = `转到 ${targetHost}`;
-        
-        // 使用绝对定位放在右侧
-        btn.style.cssText = [
-            'position:absolute',
-            'right:0',
-            'top:50%',
-            'transform:translateY(-50%)',
-            'display:inline-flex',
-            'align-items:center',
-            'justify-content:center',
-            'height:40px',
-            'min-width:100px',
-            'padding:0 16px',
-            'margin:0',
-            'font-size:14px',
-            'font-weight:500',
-            'line-height:1',
-            'border-radius:8px',
-            'border:1px solid rgba(0,0,0,0.12)',
-            'background:rgba(255,255,255,0.08)',
-            'color:inherit',
-            'cursor:pointer',
-            'flex-shrink:0',
-            'box-sizing:border-box',
-            'user-select:none',
-            'transition:all 0.2s ease',
-            'white-space:nowrap',
-            'z-index:10'
-        ].join(';');
-
-        // 添加 hover 效果
-        btn.addEventListener('mouseenter', () => {
-            btn.style.background = 'rgba(255,255,255,0.15)';
-            btn.style.borderColor = 'rgba(0,0,0,0.2)';
-            btn.style.transform = 'translateY(-50%) translateY(-1px)';
-        });
-        
-        btn.addEventListener('mouseleave', () => {
-            btn.style.background = 'rgba(255,255,255,0.08)';
-            btn.style.borderColor = 'rgba(0,0,0,0.12)';
-            btn.style.transform = 'translateY(-50%)';
-        });
-
-        // 添加 active 效果
-        btn.addEventListener('mousedown', () => {
-            btn.style.transform = 'translateY(-50%)';
-            btn.style.background = 'rgba(255,255,255,0.05)';
-        });
 
         btn.addEventListener('click', e => {
             e.preventDefault();
@@ -114,76 +163,74 @@
         return btn;
     }
 
-    function tryInject() {
-        if (injected) return;
+    function updateButtonLabel(btn) {
+        const targetHost = getTargetHost();
 
-        const wrapperSelector = '.' + WRAPPER_CLASS.split(' ').join('.');
-        const wrapper = document.querySelector(wrapperSelector);
-        if (!wrapper) return;
-
-        // 防止重复注入
-        if (wrapper.querySelector('.mw-switch-site-btn')) {
-            injected = true;
-            return;
+        if (window.innerWidth < 768) {
+            btn.textContent = targetHost.endsWith('.com') ? '.com' : '.cn';
+        } else {
+            btn.textContent = targetHost.endsWith('.com') ? '转到 .com' : '转到 .com.cn';
         }
 
-        // 设置 wrapper 样式
-        setupWrapperStyles();
+        btn.title = `转到 ${targetHost}`;
+        btn.setAttribute('aria-label', `转到 ${targetHost}`);
+    }
+
+    function tryInject() {
+        injectStyles();
+
+        const host = findSearchHost();
+        if (!host) return false;
+
+        const existing = document.querySelector('.' + BUTTON_CLASS);
+        if (existing) {
+            if (existing.parentElement !== host) {
+                host.appendChild(existing);
+            }
+            updateButtonLabel(existing);
+            host.classList.add('mw-switch-site-host');
+            return true;
+        }
 
         const btn = createButton(getTargetHost());
-        // 直接添加到 wrapper 中（绝对定位）
-        wrapper.appendChild(btn);
+        updateButtonLabel(btn);
 
-        // 给 wrapper 添加右侧内边距，避免按钮遮挡内容
-        wrapper.style.paddingRight = '120px';
+        host.classList.add('mw-switch-site-host');
+        host.appendChild(btn);
 
-        injected = true;
+        return true;
     }
 
     function handleResponsive() {
-        const btn = document.querySelector('.mw-switch-site-btn');
+        const btn = document.querySelector('.' + BUTTON_CLASS);
         if (!btn) return;
-        
-        const wrapper = document.querySelector('.' + WRAPPER_CLASS.split(' ').join('.'));
-        if (!wrapper) return;
-        
-        // 在小屏幕上简化文字
-        if (window.innerWidth < 768) {
-            const targetHost = getTargetHost();
-            btn.textContent = targetHost.endsWith('.com') ? '.com' : '.cn';
-            btn.style.minWidth = '60px';
-            btn.style.padding = '0 12px';
-            wrapper.style.paddingRight = '80px';
-        } else {
-            const targetHost = getTargetHost();
-            btn.textContent = targetHost.endsWith('.com') ? '转到 .com' : '转到 .com.cn';
-            btn.style.minWidth = '100px';
-            btn.style.padding = '0 16px';
-            wrapper.style.paddingRight = '120px';
-        }
+        updateButtonLabel(btn);
     }
 
-    const poller = setInterval(() => {
-        tryInject();
-        if (injected) {
-            clearInterval(poller);
-            handleResponsive();
-        }
-    }, POLL_INTERVAL);
+    function startPolling() {
+        if (poller) return;
+
+        const startedAt = Date.now();
+        poller = setInterval(() => {
+            const ok = tryInject();
+            if (ok || Date.now() - startedAt > POLL_TIMEOUT) {
+                clearInterval(poller);
+                poller = null;
+                handleResponsive();
+            }
+        }, POLL_INTERVAL);
+    }
+
+    startPolling();
 
     const mo = new MutationObserver(() => {
-        if (!injected) tryInject();
-        else mo.disconnect();
+        const btn = document.querySelector('.' + BUTTON_CLASS);
+        if (!btn || !document.body.contains(btn)) {
+            tryInject();
+        }
     });
     mo.observe(document.body, { childList: true, subtree: true });
 
     window.addEventListener('resize', handleResponsive);
-
-    setTimeout(() => {
-        if (!injected) {
-            clearInterval(poller);
-            mo.disconnect();
-        }
-    }, 10000);
 
 })();
