@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.30
+// @version      0.31
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -175,6 +175,7 @@
     GM_registerMenuCommand('管理屏蔽关键词', showKeywordManager);
     GM_registerMenuCommand('功能设置', showDisplaySettings);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
+    GM_registerMenuCommand('强制同步本地配置到云端', forceSyncToWebDAV);
 
     const standaloneStyleSelectors = [
         hideRightSidebarEnabled ? '#__sidebar' : '',
@@ -837,6 +838,23 @@
     }
 
     // =============== WebDAV 相关逻辑 START ===============
+
+    function forceSyncToWebDAV() {
+        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
+            showNotification('请先配置 WebDAV 同步');
+            showWebDAVConfig();
+            return;
+        }
+
+        showNotification('正在强制同步本地配置到云端...');
+        syncToWebDAV('手动强制同步到云端').then(success => {
+            if (success) {
+                showNotification('✅ 已强制同步本地配置到云端');
+            } else {
+                showNotification('❌ 强制同步失败，请检查 WebDAV 配置');
+            }
+        });
+    }
 
     // 版本比较
     function compareVersion(a, b) {
