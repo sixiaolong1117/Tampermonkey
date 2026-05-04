@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.28
-// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开和自动切换深浅主题
+// @version      0.29
+// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
 // @author       SI Xiaolong
 // @match        https://weibo.com/*
 // @match        https://*.weibo.com/*
+// @match        https://weibo.cn/sinaurl*
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
@@ -155,6 +156,11 @@
     // 统计隐藏的内容
     let hiddenCount = 0;
     const hiddenDetails = [];
+
+    if (isWeiboSinaUrlPage()) {
+        runWhenReady(initSinaurlDirectAccess);
+        return;
+    }
 
     if (redirectHomeToMyGroups()) {
         return;
@@ -519,6 +525,143 @@
         }
 
         return style;
+    }
+
+    function runWhenReady(callback) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', callback, { once: true });
+        } else {
+            callback();
+        }
+    }
+
+    function isWeiboSinaUrlPage() {
+        return window.location.hostname === 'weibo.cn' && window.location.pathname === '/sinaurl';
+    }
+
+    function decodeSinaurlTarget(rawUrl) {
+        if (!rawUrl) return null;
+
+        const normalizeTargetUrl = (target) => {
+            const targetUrl = new URL(target);
+            if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
+                console.log('微博将要访问页目标URL协议不支持:', targetUrl.protocol);
+                return null;
+            }
+            return targetUrl.href;
+        };
+
+        const trimmedUrl = rawUrl.trim();
+        try {
+            return normalizeTargetUrl(trimmedUrl);
+        } catch (e) {
+            try {
+                return normalizeTargetUrl(decodeURIComponent(trimmedUrl));
+            } catch (decodeError) {
+                console.log('微博将要访问页目标URL无效:', trimmedUrl, decodeError);
+            }
+            return null;
+        }
+    }
+
+    function findSinaurlTargetUrl() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const targetFromQuery = decodeSinaurlTarget(urlParams.get('u'));
+        if (targetFromQuery) return targetFromQuery;
+
+        const links = document.querySelectorAll('a[href]');
+        for (const link of links) {
+            try {
+                const linkUrl = new URL(link.getAttribute('href'), window.location.href);
+                if (linkUrl.hostname !== 'weibo.cn' || linkUrl.pathname !== '/sinaurl') continue;
+
+                const targetFromLink = decodeSinaurlTarget(linkUrl.searchParams.get('u'));
+                if (targetFromLink) return targetFromLink;
+            } catch (e) {
+                console.log('微博将要访问页链接解析失败:', e);
+            }
+        }
+
+        return null;
+    }
+
+    function createSinaurlDirectAccessButton(targetUrl) {
+        const button = document.createElement('button');
+        button.className = 'weibo-direct-access-button';
+        button.type = 'button';
+        button.textContent = '直接访问目标网站';
+        button.addEventListener('click', () => {
+            window.location.href = targetUrl;
+        });
+        return button;
+    }
+
+    function createSinaurlTargetNotice(targetUrl) {
+        const notice = document.createElement('div');
+        notice.className = 'weibo-direct-access-notice';
+
+        const label = document.createTextNode('检测到目标网站: ');
+        const target = document.createElement('span');
+        target.textContent = targetUrl;
+
+        notice.append(label, target);
+        return notice;
+    }
+
+    function initSinaurlDirectAccess() {
+        const targetUrl = findSinaurlTargetUrl();
+        if (!targetUrl) {
+            console.log('微博将要访问页: 未找到目标URL');
+            return;
+        }
+
+        console.log('微博将要访问页: 找到目标URL:', targetUrl);
+        appendStyle(`
+            .weibo-direct-access-button {
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                z-index: 9999;
+                padding: 12px 20px;
+                background: #ff8140;
+                color: #fff;
+                border: none;
+                border-radius: 6px;
+                font-size: 16px;
+                font-weight: bold;
+                cursor: pointer;
+                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+                transition: background 0.2s ease, transform 0.2s ease;
+            }
+            .weibo-direct-access-button:hover {
+                background: #e67230;
+                transform: scale(1.05);
+            }
+            .weibo-direct-access-notice {
+                position: fixed;
+                top: 70px;
+                right: 20px;
+                z-index: 9999;
+                max-width: 400px;
+                padding: 10px 15px;
+                background: #fff;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                font-size: 14px;
+                box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                word-break: break-all;
+            }
+            .weibo-direct-access-notice span {
+                color: #ff8140;
+                font-weight: bold;
+            }
+        `);
+
+        document.body.append(
+            createSinaurlDirectAccessButton(targetUrl),
+            createSinaurlTargetNotice(targetUrl)
+        );
     }
 
     function redirectHomeToMyGroups() {
