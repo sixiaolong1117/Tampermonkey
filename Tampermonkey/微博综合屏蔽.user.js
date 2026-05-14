@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.31
-// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、自动展开、自动切换深浅主题和微博将要访问页直接访问
+// @version      0.32
+// @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
 // @author       SI Xiaolong
@@ -13,6 +13,8 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
+// @connect      weibo.com
+// @connect      *.weibo.com
 // @run-at       document-start
 // ==/UserScript==
 
@@ -94,7 +96,6 @@
         followButton: '._followbtn_1sy5n_2',
         moreButton: '._more_1v5ao_27',
         expandButton: '.expand',
-        collapseButton: '.collapse',
 
         // 评论区
         commentFeed: '.wbpro-list',
@@ -142,12 +143,17 @@
     let redirectHomeToMyGroupsEnabled = GM_getValue(STORAGE_PREFIX + 'redirect_home_to_mygroups', DEFAULT_REDIRECT_HOME_TO_MYGROUPS);
     let autoSwitchThemeEnabled = GM_getValue(STORAGE_PREFIX + 'auto_switch_theme', DEFAULT_AUTO_SWITCH_THEME);
     const AUTO_EXPAND_SCROLL_IDLE_MS = 700;
+    const FULL_TEXT_FETCH_TIMEOUT_MS = 2500;
+    const FULL_TEXT_MAX_CONCURRENT = 2;
     let lastScrollTime = 0;
     let autoExpandTimer = null;
     let autoExpandIntervalId = null;
     let themeSwitchTimer = null;
     let colorSchemeListenerInitialized = false;
-    const autoExpandedFeedIdentities = new Set();
+    const fullTextCheckedFeedIdentities = new Set();
+    const fullTextCache = new Map();
+    const fullTextPending = new Set();
+    let fullTextActiveRequests = 0;
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -487,7 +493,7 @@
         `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
         `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
         `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
-        `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
+        `💡 功能: 长微博全文检测${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
         `💡 功能: 自动主题${autoSwitchThemeEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
         `💡 功能: AI内容屏蔽${blockAIContent ? '已启用' : '未启用，可在菜单中开启'}`
     );
@@ -503,7 +509,7 @@
             `🏠 首页跳转: ${redirectHomeToMyGroupsEnabled ? '已启用' : '未启用'}\n` +
             `🧹 右侧栏清理: 整栏${hideRightSidebarEnabled ? '开' : '关'} / 热搜${hideHotSearchEnabled ? '开' : '关'} / 首页广告${hideHomeAdsEnabled ? '开' : '关'} / 感兴趣的人${hideInterestedPeopleEnabled ? '开' : '关'} / 创作者中心${hideCreatorCenterEnabled ? '开' : '关'}\n` +
             `🧭 顶部导航清理: 推荐${hideTopRecommendEnabled ? '开' : '关'} / 视频${hideTopVideoEnabled ? '开' : '关'}\n` +
-            `📱 自动展开: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
+            `📱 长微博全文检测: ${autoExpandEnabled ? '已启用' : '未启用'}\n` +
             `🎨 自动主题: ${autoSwitchThemeEnabled ? '已启用' : '未启用'}\n` +
             `🤖 AI内容屏蔽: ${blockAIContent ? '已启用' : '未启用'}\n` +
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
@@ -2075,15 +2081,7 @@
 
             if (matchResult) {
                 const feedBody = feedContent.closest(SELECTORS.feedBody);
-                const displayKeyword = matchResult.type === 'regex'
-                    ? `正则: ${matchResult.keyword}`
-                    : matchResult.keyword;
-
-                const message = `已隐藏包含关键词"${displayKeyword}"的内容`;
-                if (applyHiddenStyle(feedBody, message, 'keyword')) {
-                    logHiddenContent('关键词', contentText.substring(0, 50) + '...', feedBody,
-                        `${matchResult.type}: ${matchResult.keyword}`);
-                }
+                applyKeywordMatch(feedBody, contentText, matchResult);
             }
         });
     }
@@ -2292,7 +2290,7 @@
                     <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-color, #333);">内容处理</div>
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="auto-expand-enabled" ${autoExpandEnabled ? 'checked' : ''} style="margin-right: 8px;">
-                        自动展开微博正文
+                        长微博全文检测
                     </label>
                     <label style="display: flex; align-items: center; margin-bottom: 10px;">
                         <input type="checkbox" id="block-ai-content" ${blockAIContent ? 'checked' : ''} style="margin-right: 8px;">
@@ -2510,16 +2508,6 @@
         return element.dataset.blockProcessed && element.dataset.blockProcessed.includes(type + ',');
     }
 
-    // 标记按钮处理状态
-    function markButtonAsProcessed(button, type) {
-        button.dataset.autoExpandProcessed = type;
-    }
-
-    // 标记按钮处理状态
-    function isButtonProcessed(button, type) {
-        return button.dataset.autoExpandProcessed === type;
-    }
-
     function getFeedBodyFromElement(element) {
         return element?.closest?.(SELECTORS.feedBody) ||
             element?.closest?.(SELECTORS.feedItem)?.querySelector?.(SELECTORS.feedBody) ||
@@ -2536,6 +2524,191 @@
             feedBody.textContent?.trim() || '';
 
         return `${userId}|${time}|${text.slice(0, 120)}`;
+    }
+
+    function getMblogIdFromUrl(url) {
+        if (!url) return '';
+
+        try {
+            const parsedUrl = new URL(url, window.location.href);
+            const idFromQuery = parsedUrl.searchParams.get('id') ||
+                parsedUrl.searchParams.get('mblogid') ||
+                parsedUrl.searchParams.get('mid');
+            if (idFromQuery) return idFromQuery;
+
+            const parts = parsedUrl.pathname.split('/').filter(Boolean);
+            const statusIndex = parts.findIndex(part => part === 'status' || part === 'detail');
+            if (statusIndex >= 0 && /^[A-Za-z0-9]{6,}$/.test(parts[statusIndex + 1] || '')) {
+                return parts[statusIndex + 1];
+            }
+
+            if (/^\d+$/.test(parts[0] || '') &&
+                /^[A-Za-z0-9]{6,}$/.test(parts[1] || '') &&
+                !/^\d+$/.test(parts[1])) {
+                return parts[1];
+            }
+        } catch (e) {
+            return '';
+        }
+
+        return '';
+    }
+
+    function getFeedDetailInfo(feedBody) {
+        if (!feedBody) return null;
+
+        const candidates = [
+            feedBody.querySelector(SELECTORS.timeLink),
+            ...feedBody.querySelectorAll('a[href*="/status/"], a[href*="/detail/"], a[href*="/"][href]')
+        ];
+
+        for (const link of candidates) {
+            const href = link?.getAttribute?.('href');
+            if (!href) continue;
+
+            const mblogId = getMblogIdFromUrl(href);
+            if (!mblogId) continue;
+
+            try {
+                const url = new URL(href, window.location.href);
+                if (!/weibo\.com$/i.test(url.hostname) && !/\.weibo\.com$/i.test(url.hostname)) continue;
+
+                return {
+                    mblogId,
+                    detailUrl: url.href
+                };
+            } catch (e) {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    function requestText(url, responseType = 'text') {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                responseType,
+                timeout: FULL_TEXT_FETCH_TIMEOUT_MS,
+                headers: {
+                    Accept: responseType === 'json' ? 'application/json, text/plain, */*' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                onload: response => {
+                    if (response.status >= 200 && response.status < 300) {
+                        resolve(response.response ?? response.responseText ?? '');
+                    } else {
+                        reject(new Error(`HTTP ${response.status}`));
+                    }
+                },
+                onerror: reject,
+                ontimeout: () => reject(new Error('timeout'))
+            });
+        });
+    }
+
+    function htmlDecode(text) {
+        if (!text) return '';
+
+        const textarea = document.createElement('textarea');
+        textarea.innerHTML = text;
+        return textarea.value;
+    }
+
+    function stripHtml(text) {
+        return htmlDecode(String(text || '')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<[^>]+>/g, ''))
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function collectTextRaw(value, texts = []) {
+        if (!value) return texts;
+
+        if (typeof value === 'string') {
+            const cleaned = stripHtml(value);
+            if (cleaned) texts.push(cleaned);
+            return texts;
+        }
+
+        if (Array.isArray(value)) {
+            value.forEach(item => collectTextRaw(item, texts));
+            return texts;
+        }
+
+        if (typeof value === 'object') {
+            ['text_raw', 'text', 'longTextContent'].forEach(key => {
+                if (typeof value[key] === 'string') {
+                    const cleaned = stripHtml(value[key]);
+                    if (cleaned) texts.push(cleaned);
+                }
+            });
+
+            ['retweeted_status', 'longText', 'status'].forEach(key => {
+                if (value[key]) collectTextRaw(value[key], texts);
+            });
+        }
+
+        return texts;
+    }
+
+    function extractFullTextFromHtml(html) {
+        if (!html) return '';
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const domTexts = Array.from(doc.querySelectorAll('.wbpro-feed-content, .weibo-text, [class*="_wbtext_"]'))
+            .map(element => element.textContent.trim())
+            .filter(Boolean);
+
+        const rawTexts = [];
+        const textRawPattern = /"(?:text_raw|longTextContent|text)"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+        let match;
+        while ((match = textRawPattern.exec(html))) {
+            try {
+                rawTexts.push(stripHtml(JSON.parse(`"${match[1]}"`)));
+            } catch (e) {
+                rawTexts.push(stripHtml(match[1]));
+            }
+        }
+
+        return [...domTexts, ...rawTexts]
+            .filter(Boolean)
+            .sort((a, b) => b.length - a.length)[0] || '';
+    }
+
+    async function fetchFullTextForFeed(feedBody) {
+        const info = getFeedDetailInfo(feedBody);
+        if (!info?.mblogId) return '';
+
+        if (fullTextCache.has(info.mblogId)) {
+            return fullTextCache.get(info.mblogId);
+        }
+
+        let text = '';
+        const apiUrl = `https://weibo.com/ajax/statuses/show?id=${encodeURIComponent(info.mblogId)}`;
+
+        try {
+            const apiResponse = await requestText(apiUrl, 'json');
+            const parsedResponse = typeof apiResponse === 'string' ? JSON.parse(apiResponse) : apiResponse;
+            const texts = collectTextRaw(parsedResponse);
+            text = texts.sort((a, b) => b.length - a.length)[0] || '';
+        } catch (e) {
+            // 部分页面或账号可能不允许接口读取，继续尝试详情页 HTML。
+        }
+
+        if (!text && info.detailUrl) {
+            try {
+                const html = await requestText(info.detailUrl, 'text');
+                text = extractFullTextFromHtml(html);
+            } catch (e) {
+                text = '';
+            }
+        }
+
+        fullTextCache.set(info.mblogId, text);
+        return text;
     }
 
     function isElementVisible(element) {
@@ -2556,8 +2729,7 @@
     }
 
     function runAutoExpandNow() {
-        clickExpandButtons();
-        hideCollapseButtons();
+        processFullTextForVisibleFeeds();
     }
 
     function scheduleAutoExpand(delay = AUTO_EXPAND_SCROLL_IDLE_MS) {
@@ -2575,69 +2747,87 @@
         }, delay);
     }
 
-    // 点击展开按钮
-    function clickExpandButtons() {
+    function applyKeywordMatch(feedBody, contentText, matchResult, source = '关键词') {
+        const displayKeyword = matchResult.type === 'regex'
+            ? `正则: ${matchResult.keyword}`
+            : matchResult.keyword;
+
+        const message = `已隐藏包含关键词"${displayKeyword}"的内容`;
+        if (applyHiddenStyle(feedBody, message, 'keyword')) {
+            logHiddenContent(source, contentText.substring(0, 50) + '...', feedBody,
+                `${matchResult.type}: ${matchResult.keyword}`);
+        }
+    }
+
+    function queueFullTextCheck(feedBody, feedIdentity) {
+        if (!feedIdentity || fullTextPending.has(feedIdentity) || fullTextActiveRequests >= FULL_TEXT_MAX_CONCURRENT) {
+            return false;
+        }
+
+        fullTextPending.add(feedIdentity);
+        fullTextActiveRequests++;
+
+        fetchFullTextForFeed(feedBody)
+            .then(fullText => {
+                if (isFeedHidden(feedBody)) return;
+
+                if (fullText) {
+                    feedBody.dataset.fullTextCheckedIdentity = feedIdentity;
+                    const matchResult = isTextMatched(fullText);
+                    if (matchResult) {
+                        applyKeywordMatch(feedBody, fullText, matchResult, '关键词全文');
+                    }
+                    return;
+                }
+
+                feedBody.dataset.fullTextCheckedIdentity = feedIdentity;
+            })
+            .finally(() => {
+                fullTextPending.delete(feedIdentity);
+                fullTextActiveRequests = Math.max(0, fullTextActiveRequests - 1);
+                if (autoExpandEnabled) scheduleAutoExpand(150);
+            });
+
+        return true;
+    }
+
+    // 仅通过后台接口/详情页获取全文做屏蔽判断，不操作页面展开/收起按钮
+    function processFullTextForVisibleFeeds() {
         if (!autoExpandEnabled) return;
         if (Date.now() - lastScrollTime < AUTO_EXPAND_SCROLL_IDLE_MS) {
             scheduleAutoExpand();
             return;
         }
 
-        const expandButtons = document.querySelectorAll(SELECTORS.expandButton);
+        const feedBodies = document.querySelectorAll(SELECTORS.feedBody);
         let clickCount = 0;
 
-        expandButtons.forEach(button => {
-            const feedBody = getFeedBodyFromElement(button);
+        feedBodies.forEach(feedBody => {
+            if (fullTextActiveRequests >= FULL_TEXT_MAX_CONCURRENT) return;
+
             const feedIdentity = getFeedIdentity(feedBody);
 
-            if (!feedIdentity || isFeedHidden(feedBody) || !isElementVisible(button)) {
+            if (!feedIdentity || isFeedHidden(feedBody) || !isElementVisible(feedBody)) {
                 return;
             }
 
-            if (button.dataset.autoExpandedIdentity &&
-                button.dataset.autoExpandedIdentity !== feedIdentity) {
-                button.classList.remove('clicked');
-                delete button.dataset.autoExpandProcessed;
-            }
-
-            if (feedBody.dataset.autoExpandedIdentity === feedIdentity ||
-                autoExpandedFeedIdentities.has(feedIdentity) ||
-                button.classList.contains('clicked') ||
-                isButtonProcessed(button, 'expanded')) {
+            if (feedBody.dataset.fullTextCheckedIdentity === feedIdentity ||
+                fullTextCheckedFeedIdentities.has(feedIdentity)) {
                 return;
             }
 
-            button.click();
-            autoExpandedFeedIdentities.add(feedIdentity);
-            feedBody.dataset.autoExpandedIdentity = feedIdentity;
-            button.dataset.autoExpandedIdentity = feedIdentity;
-            button.classList.add('clicked');
-            markButtonAsProcessed(button, 'expanded');
-            clickCount++;
+            fullTextCheckedFeedIdentities.add(feedIdentity);
+            if (queueFullTextCheck(feedBody, feedIdentity)) {
+                clickCount++;
+            }
         });
 
         if (clickCount > 0) {
-            console.log(`📱 自动展开: 已点击 ${clickCount} 个展开按钮`);
-            setTimeout(hideCollapseButtons, 800);
+            console.log(`📱 全文检测: 已排队 ${clickCount} 条微博`);
         }
     }
 
-    // 隐藏收起按钮
-    function hideCollapseButtons() {
-        if (!autoExpandEnabled) return;
-
-        const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
-        collapseButtons.forEach(btn => {
-            const feedBody = getFeedBodyFromElement(btn);
-            if (!isFeedHidden(feedBody) && !isButtonProcessed(btn, 'hidden')) {
-                btn.style.display = 'none';
-                btn.style.visibility = 'hidden';
-                markButtonAsProcessed(btn, 'hidden');
-            }
-        });
-    }
-
-    // 初始化自动展开功能
+    // 初始化长微博全文检测功能
     function initAutoExpand() {
         if (!autoExpandEnabled) return;
 
@@ -2648,10 +2838,10 @@
             autoExpandIntervalId = setInterval(scheduleAutoExpand, 2500);
         }
 
-        console.log('📱 微博自动展开功能已启用');
+        console.log('📱 微博长文全文检测已启用');
     }
 
-    // 显示自动展开设置界面
+    // 显示长微博全文检测设置界面
     function showAutoExpandSettings() {
         const overlay = document.createElement('div');
         overlay.className = 'keyword-manager-overlay';
@@ -2660,11 +2850,11 @@
         settingsModal.className = 'keyword-manager-modal';
         settingsModal.innerHTML = `
         <div class="keyword-manager">
-            <h3>自动展开设置</h3>
+            <h3>长微博全文检测设置</h3>
             <div style="margin-bottom: 15px;">
                 <label style="display: flex; align-items: center; margin-bottom: 10px;">
                     <input type="checkbox" id="auto-expand-enabled" ${autoExpandEnabled ? 'checked' : ''} style="margin-right: 8px;">
-                    启用微博自动展开功能
+                    启用长微博全文检测
                 </label>
             </div>
             <div class="button-group">
@@ -2672,11 +2862,11 @@
                 <button class="save-btn">保存</button>
             </div>
             <div class="help-text">
-                <div><strong>自动展开说明:</strong></div>
-                <div>• 启用后会自动点击微博的"展开"按钮显示完整内容</div>
-                <div>• 同时会自动隐藏"收起"按钮避免界面混乱</div>
+                <div><strong>全文检测说明:</strong></div>
+                <div>• 启用后仅后台获取长微博全文并按关键词屏蔽</div>
+                <div>• 不会自动点击展开或收起按钮</div>
                 <div>• 适用于长微博、多图微博等被折叠的内容</div>
-                <div>• 默认关闭，需要手动开启</div>
+                <div>• 可在功能设置中随时开关</div>
             </div>
         </div>
     `;
@@ -2692,9 +2882,9 @@
             overlay.remove();
             settingsModal.remove();
 
-            showNotification(`自动展开功能已${autoExpandEnabled ? '启用' : '禁用'}`);
+            showNotification(`长微博全文检测已${autoExpandEnabled ? '启用' : '禁用'}`);
 
-            // 如果启用，重新初始化自动展开
+            // 如果启用，重新初始化长微博全文检测
             if (autoExpandEnabled) {
                 initAutoExpand();
             } else {
@@ -2704,26 +2894,10 @@
                     clearInterval(autoExpandIntervalId);
                     autoExpandIntervalId = null;
                 }
-                autoExpandedFeedIdentities.clear();
-
-                // 如果禁用，恢复收起按钮的显示
-                const collapseButtons = document.querySelectorAll(SELECTORS.collapseButton);
-                collapseButtons.forEach(btn => {
-                    btn.style.display = '';
-                    btn.style.visibility = '';
-                    delete btn.dataset.autoExpandProcessed;
-                });
-
-                // 清除展开按钮的标记
-                const expandButtons = document.querySelectorAll(SELECTORS.expandButton);
-                expandButtons.forEach(btn => {
-                    btn.classList.remove('clicked');
-                    delete btn.dataset.autoExpandProcessed;
-                    delete btn.dataset.autoExpandedIdentity;
-                });
+                fullTextCheckedFeedIdentities.clear();
 
                 document.querySelectorAll(SELECTORS.feedBody).forEach(feedBody => {
-                    delete feedBody.dataset.autoExpandedIdentity;
+                    delete feedBody.dataset.fullTextCheckedIdentity;
                 });
             }
         });
@@ -3033,7 +3207,7 @@
         setInterval(hideStandaloneSidebarWidgets, 1500);
         setInterval(hideTopNavButtons, 1500);
 
-        // 初始化自动展开功能
+        // 初始化长微博全文检测功能
         initAutoExpand();
         initAutoThemeSwitch();
 
@@ -3076,7 +3250,7 @@
             `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
             `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
             `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
-            `💡 功能: 自动展开${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
+            `💡 功能: 长微博全文检测${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
             `💡 功能: 自动主题${autoSwitchThemeEnabled ? '已启用' : '未启用，可在菜单中开启'}`
         );
     }
