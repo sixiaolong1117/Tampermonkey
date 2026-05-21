@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.32
+// @version      0.33
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -166,7 +166,13 @@
 
     // 统计隐藏的内容
     let hiddenCount = 0;
+    const MAX_HIDDEN_DETAILS = 500;
     const hiddenDetails = [];
+    const hiddenTypeCounts = {};
+    const hiddenReasonCounts = {};
+
+    window.getHiddenStats = getHiddenStats;
+    window.resetHiddenStats = resetHiddenStats;
 
     if (isWeiboSinaUrlPage()) {
         runWhenReady(initSinaurlDirectAccess);
@@ -182,6 +188,7 @@
     GM_registerMenuCommand('功能设置', showDisplaySettings);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('强制同步本地配置到云端', forceSyncToWebDAV);
+    GM_registerMenuCommand('查看隐藏统计', getHiddenStats);
 
     const standaloneStyleSelectors = [
         hideRightSidebarEnabled ? '#__sidebar' : '',
@@ -452,9 +459,15 @@
             matched: matchedText,
             reason: reason,
             timestamp: new Date().toLocaleTimeString(),
-            element: element
+            text: element?.textContent?.trim?.().slice(0, 120) || '',
+            path: getElementSummary(element)
         };
         hiddenDetails.push(detail);
+        if (hiddenDetails.length > MAX_HIDDEN_DETAILS) {
+            hiddenDetails.shift();
+        }
+        hiddenTypeCounts[type] = (hiddenTypeCounts[type] || 0) + 1;
+        hiddenReasonCounts[reason] = (hiddenReasonCounts[reason] || 0) + 1;
 
         console.log(
             `🚫 微博内容隐藏 #${hiddenCount}\n` +
@@ -467,22 +480,46 @@
 
         // 每隐藏10条内容时输出汇总信息
         if (hiddenCount % 10 === 0) {
-            const tagStats = hiddenDetails.filter(d => d.type === '推荐标签').length;
-            const keywordStats = hiddenDetails.filter(d => d.type === '关键词').length;
-            const idStats = hiddenDetails.filter(d => d.type === '用户ID').length;
             console.log(
                 `📊 隐藏内容汇总: 已隐藏 ${hiddenCount} 条内容\n` +
-                `🏷️ 推荐标签: ${tagStats} 条\n` +
-                `🔤 关键词: ${keywordStats} 条\n` +
-                `👤 用户ID: ${idStats} 条\n` +
+                `🏷️ 推荐标签: ${hiddenTypeCounts['推荐标签'] || 0} 条\n` +
+                `🔤 关键词: ${hiddenTypeCounts['关键词'] || 0} 条\n` +
+                `👤 用户ID: ${hiddenTypeCounts['用户ID'] || 0} 条\n` +
                 `📋 详细分布:`,
-                hiddenDetails.reduce((acc, detail) => {
-                    const key = detail.reason;
-                    acc[key] = (acc[key] || 0) + 1;
-                    return acc;
-                }, {})
+                { ...hiddenReasonCounts }
             );
         }
+    }
+
+    function getElementSummary(element) {
+        if (!element || element.nodeType !== 1) return '';
+
+        const tag = element.tagName?.toLowerCase?.() || '';
+        const id = element.id ? `#${element.id}` : '';
+        const classes = Array.from(element.classList || []).slice(0, 4).map(className => `.${className}`).join('');
+        return `${tag}${id}${classes}`;
+    }
+
+    function getHiddenStats() {
+        console.log(
+            `%c📊 微博内容隐藏统计\n` +
+            `📈 总共隐藏: ${hiddenCount} 条内容\n` +
+            `🏷️ 推荐标签: ${hiddenTypeCounts['推荐标签'] || 0} 条\n` +
+            `🔤 关键词: ${hiddenTypeCounts['关键词'] || 0} 条\n` +
+            `👤 用户ID: ${hiddenTypeCounts['用户ID'] || 0} 条\n` +
+            `📋 详细分布:`,
+            'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;',
+            { ...hiddenReasonCounts }
+        );
+        console.log('📋 最近记录:', hiddenDetails);
+    }
+
+    function resetHiddenStats() {
+        hiddenCount = 0;
+        hiddenDetails.length = 0;
+        Object.keys(hiddenTypeCounts).forEach(key => delete hiddenTypeCounts[key]);
+        Object.keys(hiddenReasonCounts).forEach(key => delete hiddenReasonCounts[key]);
+        console.log('🔄 隐藏统计已重置');
     }
 
     // 输出脚本信息
@@ -1903,9 +1940,6 @@
 
     // 修改用户ID屏蔽逻辑
     function hideContent() {
-        // 使用DocumentFragment减少重排
-        const fragment = document.createDocumentFragment();
-
         // 批量收集需要处理的元素
         const tasks = [];
 
@@ -1926,65 +1960,12 @@
         // 使用requestAnimationFrame批量执行，减少重排
         requestAnimationFrame(() => {
             tasks.forEach(task => task());
-            // 不再需要强制更新布局
         });
     }
 
     // 判断当前页面是否为热搜页
     function isHotWeiboPage() {
         return location.pathname.startsWith('/hot/weibo/');
-    }
-
-    // 通过时间过滤屏蔽
-    function hideByTimeFilter() {
-        // 只在热搜页执行
-        if (!isHotWeiboPage()) {
-            return;
-        }
-
-        const feedBodies = document.querySelectorAll(SELECTORS.feedBody);
-
-        feedBodies.forEach(feedBody => {
-            // 跳过已经被隐藏的内容，检查是否已处理
-            if (feedBody.classList.contains('custom-hidden') || isProcessed(feedBody, 'time')) {
-                return;
-            }
-
-            if (isWeiboTooOld(feedBody)) {
-                feedBody.classList.add('custom-hidden');
-                markAsProcessed(feedBody, 'time'); // 标记已处理
-
-                // 隐藏所有同级子元素
-                const parent = feedBody.parentElement;
-                Array.from(parent.children).forEach(child => {
-                    if (!child.classList.contains('custom-hidden-message') &&
-                        !child.classList.contains('time-filter-hidden-message')) {
-                        child.style.display = 'none';
-                    }
-                });
-
-                // 根据设置决定是否显示占位块
-                if (showPlaceholder) {
-                    const message = document.createElement('div');
-                    message.className = 'time-filter-hidden-message';
-                    message.innerHTML = `
-                    <div class="message-content">
-                        ⏰ 已隐藏 ${timeFilterDays} 天前的微博
-                    </div>
-                `;
-                    parent.appendChild(message);
-                } else {
-                    // 使用最小化占位符
-                    const placeholder = document.createElement('div');
-                    placeholder.className = 'time-filter-hidden-message minimal-placeholder';
-                    placeholder.style.cssText = 'height: 0px; margin: 0; padding: 0; overflow: hidden;';
-                    parent.appendChild(placeholder);
-                }
-
-                // 记录到控制台
-                logHiddenContent('时间过滤', `${timeFilterDays}天前`, feedBody, '时间过滤');
-            }
-        });
     }
 
     // 通用隐藏处理函数
@@ -2339,6 +2320,17 @@
                 return;
             }
 
+            const needsPageReload =
+                showBlockButton !== newShowBlockButton ||
+                showPlaceholder !== newShowPlaceholder ||
+                hideRightSidebarEnabled !== newHideRightSidebarEnabled ||
+                hideHotSearchEnabled !== newHideHotSearchEnabled ||
+                hideHomeAdsEnabled !== newHideHomeAdsEnabled ||
+                hideInterestedPeopleEnabled !== newHideInterestedPeopleEnabled ||
+                hideCreatorCenterEnabled !== newHideCreatorCenterEnabled ||
+                hideTopRecommendEnabled !== newHideTopRecommendEnabled ||
+                hideTopVideoEnabled !== newHideTopVideoEnabled;
+
             showBlockButton = newShowBlockButton;
             showPlaceholder = newShowPlaceholder;
             redirectHomeToMyGroupsEnabled = newRedirectHomeToMyGroupsEnabled;
@@ -2373,10 +2365,34 @@
             overlay.remove();
             settingsModal.remove();
 
-            showNotification('功能设置已保存，正在刷新页面应用');
+            if (needsPageReload) {
+                showNotification('功能设置已保存，正在刷新页面应用');
+                location.reload();
+                return;
+            }
 
-            // 重新执行屏蔽以应用新设置
-            location.reload(); // 刷新页面以应用新设置
+            if (autoExpandEnabled) {
+                initAutoExpand();
+            } else {
+                clearTimeout(autoExpandTimer);
+                autoExpandTimer = null;
+                if (autoExpandIntervalId) {
+                    clearInterval(autoExpandIntervalId);
+                    autoExpandIntervalId = null;
+                }
+                fullTextCheckedFeedIdentities.clear();
+                fullTextPending.clear();
+            }
+
+            if (autoSwitchThemeEnabled) {
+                initAutoThemeSwitch();
+            } else {
+                clearTimeout(themeSwitchTimer);
+                themeSwitchTimer = null;
+            }
+
+            showNotification('功能设置已保存');
+            hideContent();
         });
 
         // 关闭按钮事件
@@ -2396,80 +2412,6 @@
         // 添加到页面
         document.body.appendChild(overlay);
         document.body.appendChild(settingsModal);
-    }
-
-    // 显示时间过滤配置界面函数
-    function showTimeFilterConfig() {
-        const overlay = document.createElement('div');
-        overlay.className = 'keyword-manager-overlay';
-
-        const configModal = document.createElement('div');
-        configModal.className = 'keyword-manager-modal';
-        configModal.innerHTML = `
-        <div class="keyword-manager">
-            <h3>设置时间过滤</h3>
-            <div style="margin-bottom: 15px;">
-                <label style="display: block; margin-bottom: 10px; font-weight: bold;">
-                    隐藏多少天之前的微博：
-                </label>
-                <input type="number" id="time-filter-days"
-                    value="${timeFilterDays}"
-                    min="0" max="3650"
-                    style="width: 100%; padding: 8px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; background: var(--input-bg, white); color: var(--input-color, #333);">
-            </div>
-            <div class="button-group">
-                <button class="close-btn">取消</button>
-                <button class="save-btn">保存</button>
-            </div>
-            <div class="help-text">
-                <div><strong>时间过滤说明：</strong></div>
-                <div>• 设置隐藏多少天之前的微博</div>
-                <div>• 设置为 0 表示禁用时间过滤</div>
-                <div>• 基于微博的发布时间进行过滤</div>
-                <div>• 对首页的所有微博生效</div>
-            </div>
-        </div>
-    `;
-
-        configModal.querySelector('.save-btn').addEventListener('click', function () {
-            const daysInput = configModal.querySelector('#time-filter-days');
-            const newDays = parseInt(daysInput.value);
-
-            if (!isNaN(newDays) && newDays >= 0) {
-                timeFilterDays = newDays;
-                GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
-
-                overlay.remove();
-                configModal.remove();
-
-                showNotification(`时间过滤已设置为: ${timeFilterDays}天`);
-
-                // 重新执行屏蔽
-                hideContent();
-            } else {
-                showNotification('请输入有效的天数');
-            }
-        });
-
-        configModal.querySelector('.close-btn').addEventListener('click', function () {
-            overlay.remove();
-            configModal.remove();
-        });
-
-        overlay.addEventListener('click', function (e) {
-            if (e.target === overlay) {
-                overlay.remove();
-                configModal.remove();
-            }
-        });
-
-        document.body.appendChild(overlay);
-        document.body.appendChild(configModal);
-
-        // 聚焦到输入框并选中文本
-        const input = configModal.querySelector('#time-filter-days');
-        input.focus();
-        input.select();
     }
 
     // 时间过滤检查函数
@@ -2506,12 +2448,6 @@
 
     function isProcessed(element, type) {
         return element.dataset.blockProcessed && element.dataset.blockProcessed.includes(type + ',');
-    }
-
-    function getFeedBodyFromElement(element) {
-        return element?.closest?.(SELECTORS.feedBody) ||
-            element?.closest?.(SELECTORS.feedItem)?.querySelector?.(SELECTORS.feedBody) ||
-            element?.closest?.('.vue-recycle-scroller__item-view')?.querySelector?.(SELECTORS.feedBody);
     }
 
     function getFeedIdentity(feedBody) {
@@ -2841,151 +2777,6 @@
         console.log('📱 微博长文全文检测已启用');
     }
 
-    // 显示长微博全文检测设置界面
-    function showAutoExpandSettings() {
-        const overlay = document.createElement('div');
-        overlay.className = 'keyword-manager-overlay';
-
-        const settingsModal = document.createElement('div');
-        settingsModal.className = 'keyword-manager-modal';
-        settingsModal.innerHTML = `
-        <div class="keyword-manager">
-            <h3>长微博全文检测设置</h3>
-            <div style="margin-bottom: 15px;">
-                <label style="display: flex; align-items: center; margin-bottom: 10px;">
-                    <input type="checkbox" id="auto-expand-enabled" ${autoExpandEnabled ? 'checked' : ''} style="margin-right: 8px;">
-                    启用长微博全文检测
-                </label>
-            </div>
-            <div class="button-group">
-                <button class="close-btn">取消</button>
-                <button class="save-btn">保存</button>
-            </div>
-            <div class="help-text">
-                <div><strong>全文检测说明:</strong></div>
-                <div>• 启用后仅后台获取长微博全文并按关键词屏蔽</div>
-                <div>• 不会自动点击展开或收起按钮</div>
-                <div>• 适用于长微博、多图微博等被折叠的内容</div>
-                <div>• 可在功能设置中随时开关</div>
-            </div>
-        </div>
-    `;
-
-        // 保存按钮事件
-        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
-            const newAutoExpandEnabled = settingsModal.querySelector('#auto-expand-enabled').checked;
-
-            autoExpandEnabled = newAutoExpandEnabled;
-            GM_setValue(STORAGE_PREFIX + 'auto_expand', autoExpandEnabled);
-
-            // 关闭设置窗口
-            overlay.remove();
-            settingsModal.remove();
-
-            showNotification(`长微博全文检测已${autoExpandEnabled ? '启用' : '禁用'}`);
-
-            // 如果启用，重新初始化长微博全文检测
-            if (autoExpandEnabled) {
-                initAutoExpand();
-            } else {
-                clearTimeout(autoExpandTimer);
-                autoExpandTimer = null;
-                if (autoExpandIntervalId) {
-                    clearInterval(autoExpandIntervalId);
-                    autoExpandIntervalId = null;
-                }
-                fullTextCheckedFeedIdentities.clear();
-
-                document.querySelectorAll(SELECTORS.feedBody).forEach(feedBody => {
-                    delete feedBody.dataset.fullTextCheckedIdentity;
-                });
-            }
-        });
-
-        // 关闭按钮事件
-        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
-            overlay.remove();
-            settingsModal.remove();
-        });
-
-        // 点击遮罩层关闭
-        overlay.addEventListener('click', function (e) {
-            if (e.target === overlay) {
-                overlay.remove();
-                settingsModal.remove();
-            }
-        });
-
-        // 添加到页面
-        document.body.appendChild(overlay);
-        document.body.appendChild(settingsModal);
-    }
-
-    function showAIContentSettings() {
-        const overlay = document.createElement('div');
-        overlay.className = 'keyword-manager-overlay';
-
-        const settingsModal = document.createElement('div');
-        settingsModal.className = 'keyword-manager-modal';
-        settingsModal.innerHTML = `
-        <div class="keyword-manager">
-            <h3>AI内容屏蔽设置</h3>
-            <div style="margin-bottom: 15px;">
-                <label style="display: flex; align-items: center; margin-bottom: 10px;">
-                    <input type="checkbox" id="block-ai-content" ${blockAIContent ? 'checked' : ''} style="margin-right: 8px;">
-                    屏蔽疑似AI生成的内容
-                </label>
-            </div>
-            <div class="button-group">
-                <button class="close-btn">取消</button>
-                <button class="save-btn">保存</button>
-            </div>
-            <div class="help-text">
-                <div><strong>AI内容屏蔽说明:</strong></div>
-                <div>• 启用后会自动屏蔽带有"疑似使用了AI生成技术"提示的微博</div>
-                <div>• 包括AI生成的视频、图片等内容</div>
-                <div>• 默认关闭，需要手动开启</div>
-            </div>
-        </div>
-    `;
-
-        // 保存按钮事件
-        settingsModal.querySelector('.save-btn').addEventListener('click', function () {
-            const newBlockAIContent = settingsModal.querySelector('#block-ai-content').checked;
-
-            blockAIContent = newBlockAIContent;
-            GM_setValue(STORAGE_PREFIX + 'block_ai_content', blockAIContent);
-
-            // 关闭设置窗口
-            overlay.remove();
-            settingsModal.remove();
-
-            showNotification(`AI内容屏蔽已${blockAIContent ? '启用' : '禁用'}`);
-
-            // 重新执行屏蔽
-            hideContent();
-            forceLayoutUpdate();
-        });
-
-        // 关闭按钮事件
-        settingsModal.querySelector('.close-btn').addEventListener('click', function () {
-            overlay.remove();
-            settingsModal.remove();
-        });
-
-        // 点击遮罩层关闭
-        overlay.addEventListener('click', function (e) {
-            if (e.target === overlay) {
-                overlay.remove();
-                settingsModal.remove();
-            }
-        });
-
-        // 添加到页面
-        document.body.appendChild(overlay);
-        document.body.appendChild(settingsModal);
-    }
-
     let lastHideTime = 0;
     let pendingHide = false;
     function throttledHide() {
@@ -3008,13 +2799,6 @@
                 }
             }, 50 - timeSinceLastHide);
         }
-    }
-
-    // 使用防抖避免频繁执行
-    let timeoutId;
-    function debouncedHide() {
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(hideContent, 100);
     }
 
     // 初始化
@@ -3053,8 +2837,6 @@
         }
 
         // 页面加载时执行一次
-        hideStandaloneSidebarWidgets();
-        hideTopNavButtons();
         hideContent();
 
         // 优化的MutationObserver - 精确监听，立即响应
@@ -3204,8 +2986,10 @@
 
         observeScrollItems();
         setInterval(observeScrollItems, 2000); // 定期检查新元素
-        setInterval(hideStandaloneSidebarWidgets, 1500);
-        setInterval(hideTopNavButtons, 1500);
+        setInterval(() => {
+            hideStandaloneSidebarWidgets();
+            hideTopNavButtons();
+        }, 5000); // 低频兜底，处理微博复用 DOM 时只改内容/属性的场景
 
         // 初始化长微博全文检测功能
         initAutoExpand();
@@ -3214,34 +2998,6 @@
         // 添加全局函数
         window.manualToggleColorMode = toggleColorMode;
         window.syncWeiboColorMode = toggleColorMode;
-
-        window.getHiddenStats = function () {
-            const tagStats = hiddenDetails.filter(d => d.type === '推荐标签').length;
-            const keywordStats = hiddenDetails.filter(d => d.type === '关键词').length;
-            const idStats = hiddenDetails.filter(d => d.type === '用户ID').length;
-
-            console.log(
-                `%c📊 微博内容隐藏统计\n` +
-                `📈 总共隐藏: ${hiddenCount} 条内容\n` +
-                `🏷️ 推荐标签: ${tagStats} 条\n` +
-                `🔤 关键词: ${keywordStats} 条\n` +
-                `👤 用户ID: ${idStats} 条\n` +
-                `📋 详细分布:`,
-                'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;',
-                hiddenDetails.reduce((acc, detail) => {
-                    const key = detail.reason;
-                    acc[key] = (acc[key] || 0) + 1;
-                    return acc;
-                }, {})
-            );
-            console.log('📋 完整记录:', hiddenDetails);
-        };
-
-        window.resetHiddenStats = function () {
-            hiddenCount = 0;
-            hiddenDetails.length = 0;
-            console.log('🔄 隐藏统计已重置');
-        };
 
         console.log(
             `💡 提示: 在控制台使用以下命令:\n` +
