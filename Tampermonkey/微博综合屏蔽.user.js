@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.33
+// @version      0.34
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -1409,17 +1409,29 @@
         return blockedIds.includes(userId);
     }
 
-    function getUserNameFromLink(userLink, fallback = '未知用户') {
+    function getUserNameFromLink(userLink, fallback = '未知用户', feedBody) {
         if (!userLink) return fallback;
 
         const nameSpan = userLink.querySelector('span');
-        const rawName = nameSpan?.getAttribute('title') ||
+        let rawName = nameSpan?.getAttribute('title') ||
             nameSpan?.textContent ||
             userLink.getAttribute('title') ||
             userLink.textContent ||
-            fallback;
+            '';
 
-        return rawName.trim().replace(/^@/, '') || fallback;
+        rawName = rawName.trim().replace(/^@/, '');
+        if (rawName) return rawName;
+
+        // 最后尝试从头像 alt 属性获取
+        if (feedBody) {
+            const avatarImg = feedBody.querySelector('.woo-avatar-main img, .woo-avatar-img');
+            if (avatarImg) {
+                const alt = avatarImg.getAttribute('alt');
+                if (alt && alt.trim()) return alt.trim();
+            }
+        }
+
+        return fallback;
     }
 
     function getUserIdFromLink(userLink) {
@@ -1431,6 +1443,29 @@
         const href = userLink.getAttribute('href') || '';
         const match = href.match(/\/u\/(\d+)/);
         return match ? match[1] : '';
+    }
+
+    // 在容器中查找用户名文本链接（跳过头像链接）
+    function findUserNameLink(container) {
+        if (!container) return null;
+
+        // 策略1: 查找 href 包含 /u/ 的链接（跳过含图片的）
+        const allLinks = container.querySelectorAll('a[href*="/u/"]');
+        for (const link of allLinks) {
+            if (link.closest('.woo-avatar-main') || link.querySelector('img')) continue;
+            return link;
+        }
+
+        // 策略2: 查找 span[usercard] 的父链接（超话布局中 href 为空的情况）
+        const spannedUsercard = container.querySelector('a span[usercard]');
+        if (spannedUsercard) return spannedUsercard.closest('a');
+
+        // 策略3: 查找 a[usercard] 且不含图片的链接
+        const linkWithUsercard = container.querySelector('a[usercard]:not(.woo-avatar-main a)');
+        if (linkWithUsercard && !linkWithUsercard.querySelector('img')) return linkWithUsercard;
+
+        // 降级：返回第一个非头像的 a[href*="/u/"]
+        return allLinks[0] || null;
     }
 
     function addFeedAuthor(authors, seenIds, userId, userName, role) {
@@ -1452,10 +1487,9 @@
         const header = feedBody.querySelector('header');
         const mainAvatar = header?.querySelector(SELECTORS.avatar) || feedBody.querySelector(SELECTORS.avatar);
         const mainUserId = mainAvatar?.getAttribute('usercard') || '';
-        const mainUserLink = header?.querySelector(`a[usercard="${mainUserId}"], a[href*="/u/${mainUserId}"], ${SELECTORS.userLink}, ${SELECTORS.userName}`) ||
-            feedBody.querySelector(`a[usercard="${mainUserId}"], a[href*="/u/${mainUserId}"]`);
+        const mainUserLink = findUserNameLink(header || feedBody);
 
-        addFeedAuthor(authors, seenIds, mainUserId, getUserNameFromLink(mainUserLink), '主作者');
+        addFeedAuthor(authors, seenIds, mainUserId, getUserNameFromLink(mainUserLink, '未知用户', feedBody), '主作者');
 
         const retweetLinks = feedBody.querySelectorAll([
             '.retweet a[usercard]',
@@ -1470,7 +1504,7 @@
 
         retweetLinks.forEach(userLink => {
             const userId = getUserIdFromLink(userLink);
-            addFeedAuthor(authors, seenIds, userId, getUserNameFromLink(userLink), '转发原作者');
+            addFeedAuthor(authors, seenIds, userId, getUserNameFromLink(userLink, '未知用户', feedBody), '转发原作者');
         });
 
         return authors;
@@ -1591,14 +1625,20 @@
 
             const userId = avatarDiv.getAttribute('usercard');
 
-            // 查找用户名链接用于插入按钮
-            const userLink = feedItem.querySelector(SELECTORS.userLink) ||
-                feedItem.querySelector(SELECTORS.userName);
+            // 查找用户名链接（跳过头像链接）
+            const userLink = findUserNameLink(feedItem);
             if (!userLink) return;
             let userName = '未知用户';
             const userSpan = userLink.querySelector('span');
             if (userSpan) {
                 userName = userSpan.getAttribute('title') || userSpan.textContent || userName;
+            }
+            // 如果还是未知用户，尝试从头像的 alt 属性获取
+            if (userName === '未知用户') {
+                const avatarImg = feedItem.querySelector('.woo-avatar-main img, .woo-avatar-img');
+                if (avatarImg) {
+                    userName = avatarImg.getAttribute('alt') || userName;
+                }
             }
 
             if (!userId) return;
@@ -1660,35 +1700,12 @@
                 }
             });
 
-            const container = findBlockButtonContainer(feedItem);
-            if (container) {
-                container.appendChild(blockBtn);
-            } else {
-                // 降级方案
-                userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
-            }
+            // 始终插入到用户名链接后面
+            userLink.parentNode.insertBefore(blockBtn, userLink.nextSibling);
         });
 
         // 为评论区添加屏蔽按钮
         addCommentBlockButtons();
-    }
-
-    // 智能查找插入位置
-    function findBlockButtonContainer(feedItem) {
-        // 优先查找已存在的 iconsPlus 容器
-        let container = feedItem.querySelector(SELECTORS.iconsPlus);
-        if (container) return container;
-
-        // 如果没有，尝试在 nick 或 suffixbox 中创建
-        const parentBox = feedItem.querySelector('._nick_1b05f_25, ._suffixbox_1b05f_33');
-        if (parentBox) {
-            container = document.createElement('div');
-            container.className = 'woo-box-flex woo-box-alignCenter _iconsPlus_1b05f_75';
-            parentBox.appendChild(container);
-            return container;
-        }
-
-        return null;
     }
 
     // 为评论区用户添加屏蔽按钮
