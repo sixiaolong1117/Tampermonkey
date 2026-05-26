@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博 AI 概括工具
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.2
+// @version      0.3
 // @description  使用 LLM 对微博博文进行 AI 概括总结
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -15,7 +15,9 @@
 // @grant        GM_notification
 // @connect      localhost
 // @connect      127.0.0.1
-// @connect      cloud.infini-ai.com
+// @connect      weibo.com
+// @connect      *.weibo.com
+// @connect      *
 // ==/UserScript==
 
 (function() {
@@ -23,15 +25,16 @@
 
     // 默认配置
     const DEFAULT_CONFIG = {
-        aiProvider: 'ollama', // 'ollama' 或 'infini'
+        aiProvider: 'ollama', // 'ollama' 或 'openai'
         
         // Ollama 配置
         ollamaUrl: 'http://localhost:11434',
         ollamaModel: 'llama3.2',
         
-        // Infini-AI 配置
-        infiniApiKey: '',
-        infiniModel: 'deepseek-v3.2-exp',
+        // OpenAI 兼容配置
+        openaiBaseUrl: 'https://api.openai.com/v1',
+        openaiApiKey: '',
+        openaiModel: 'gpt-4o-mini',
         
         // 通用配置
         maxLength: 1000,
@@ -72,6 +75,7 @@
             this.config = this.loadConfig();
             this.initMenu();
             this.observeFeed();
+            this.fullTextCache = new Map();
         }
 
         loadConfig() {
@@ -175,7 +179,7 @@
                 <div style="padding: 20px;">
                     ${this.createProviderSelector(colors)}
                     ${this.createOllamaSettings(colors)}
-                    ${this.createInfiniSettings(colors)}
+                    ${this.createOpenaiSettings(colors)}
                     ${this.createCommonSettings(colors)}
                     ${this.createActionButtons(colors)}
                 </div>
@@ -202,7 +206,7 @@
                         box-sizing: border-box;
                     ">
                         <option value="ollama" ${this.config.aiProvider === 'ollama' ? 'selected' : ''}>Ollama (本地模型)</option>
-                        <option value="infini" ${this.config.aiProvider === 'infini' ? 'selected' : ''}>Infini-AI (云端)</option>
+                        <option value="openai" ${this.config.aiProvider === 'openai' ? 'selected' : ''}>OpenAI 兼容 (通用)</option>
                     </select>
                 </div>
             `;
@@ -271,22 +275,22 @@
             `;
         }
 
-        createInfiniSettings(colors) {
-            const display = this.config.aiProvider === 'infini' ? 'block' : 'none';
+        createOpenaiSettings(colors) {
+            const display = this.config.aiProvider === 'openai' ? 'block' : 'none';
             return `
-                <div id="infini-settings" style="display: ${display};">
+                <div id="openai-settings" style="display: ${display};">
                     <div style="margin-bottom: 20px;">
                         <label style="
                             display: block;
                             margin-bottom: 8px;
                             color: ${colors.textPrimary};
                             font-weight: 500;
-                        ">🔑 Infini API Key</label>
+                        ">🌐 Base URL</label>
                         <input
-                            type="password"
-                            id="infini-api-key-input"
-                            value="${this.config.infiniApiKey}"
-                            placeholder="输入 API Key"
+                            type="text"
+                            id="openai-base-url-input"
+                            value="${this.config.openaiBaseUrl}"
+                            placeholder="https://api.openai.com/v1"
                             style="
                                 width: 100%;
                                 padding: 10px;
@@ -299,8 +303,33 @@
                             "
                         />
                         <small style="color: ${colors.textSecondary}; display: block; margin-top: 5px;">
-                            访问 <a href="https://cloud.infini-ai.com" target="_blank" style="color: ${colors.infoBtn};">Infini-AI</a> 获取 API Key
+                            支持任何兼容 OpenAI 接口的 API 地址，例如 https://api.openai.com/v1、https://api.deepseek.com/v1 等
                         </small>
+                    </div>
+
+                    <div style="margin-bottom: 20px;">
+                        <label style="
+                            display: block;
+                            margin-bottom: 8px;
+                            color: ${colors.textPrimary};
+                            font-weight: 500;
+                        ">🔑 API Key</label>
+                        <input
+                            type="password"
+                            id="openai-api-key-input"
+                            value="${this.config.openaiApiKey}"
+                            placeholder="sk-..."
+                            style="
+                                width: 100%;
+                                padding: 10px;
+                                border: 1px solid ${colors.inputBorder};
+                                border-radius: 6px;
+                                background: ${colors.inputBg};
+                                color: ${colors.textPrimary};
+                                font-size: 14px;
+                                box-sizing: border-box;
+                            "
+                        />
                     </div>
 
                     <div style="margin-bottom: 20px;">
@@ -312,9 +341,9 @@
                         ">🧠 模型名称</label>
                         <input
                             type="text"
-                            id="infini-model-input"
-                            value="${this.config.infiniModel}"
-                            placeholder="deepseek-v3.2-exp"
+                            id="openai-model-input"
+                            value="${this.config.openaiModel}"
+                            placeholder="gpt-4o-mini"
                             style="
                                 width: 100%;
                                 padding: 10px;
@@ -327,7 +356,7 @@
                             "
                         />
                         <small style="color: ${colors.textSecondary}; display: block; margin-top: 5px;">
-                            推荐: deepseek-v3.2-exp, qwen2.5-72b-instruct
+                            例如: gpt-4o-mini, gpt-4o, deepseek-chat, qwen-turbo 等
                         </small>
                     </div>
                 </div>
@@ -460,9 +489,9 @@
 
             // AI 平台切换
             panel.querySelector('#ai-provider-select').addEventListener('change', (e) => {
-                const isOllama = e.target.value === 'ollama';
-                panel.querySelector('#ollama-settings').style.display = isOllama ? 'block' : 'none';
-                panel.querySelector('#infini-settings').style.display = isOllama ? 'none' : 'block';
+                const provider = e.target.value;
+                panel.querySelector('#ollama-settings').style.display = provider === 'ollama' ? 'block' : 'none';
+                panel.querySelector('#openai-settings').style.display = provider === 'openai' ? 'block' : 'none';
             });
 
             // 测试连接
@@ -493,7 +522,7 @@
                 if (provider === 'ollama') {
                     await this.testOllamaConnection(panel, testResult, colors);
                 } else {
-                    await this.testInfiniConnection(panel, testResult, colors);
+                    await this.testOpenAIConnection(panel, testResult, colors);
                 }
             } catch (error) {
                 testResult.style.background = colors.errorBg;
@@ -534,9 +563,10 @@
             });
         }
 
-        testInfiniConnection(panel, testResult, colors) {
-            const apiKey = panel.querySelector('#infini-api-key-input').value.trim();
-            const model = panel.querySelector('#infini-model-input').value.trim();
+        testOpenAIConnection(panel, testResult, colors) {
+            const baseUrl = panel.querySelector('#openai-base-url-input').value.trim().replace(/\/+$/, '');
+            const apiKey = panel.querySelector('#openai-api-key-input').value.trim();
+            const model = panel.querySelector('#openai-model-input').value.trim();
 
             if (!apiKey) {
                 testResult.style.background = colors.errorBg;
@@ -547,29 +577,81 @@
 
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: 'https://cloud.infini-ai.com/maas/v1/chat/completions',
+                    method: 'GET',
+                    url: `${baseUrl}/models`,
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
                     },
-                    data: JSON.stringify({
-                        model: model,
-                        messages: [{ role: 'user', content: 'test' }],
-                        max_tokens: 10
-                    }),
                     timeout: 10000,
                     onload: (response) => {
                         if (response.status === 200) {
+                            const data = JSON.parse(response.responseText);
+                            const models = data.data || [];
+                            const found = models.find(m => m.id === model);
                             testResult.style.background = '#e8f5e9';
                             testResult.style.color = '#2e7d32';
-                            testResult.innerHTML = `✅ 连接成功！<br>模型: ${model}`;
+                            testResult.innerHTML = `✅ 连接成功！${found ? '✓ 模型可用' : '⚠ 未找到指定模型'}<br>地址: ${baseUrl}`;
                             resolve();
                         } else {
-                            reject(new Error(`API 错误: ${response.status}`));
+                            // 如果 /models 接口不可用，尝试直接发 chat 请求
+                            GM_xmlhttpRequest({
+                                method: 'POST',
+                                url: `${baseUrl}/chat/completions`,
+                                headers: {
+                                    'Authorization': `Bearer ${apiKey}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                data: JSON.stringify({
+                                    model: model,
+                                    messages: [{ role: 'user', content: 'test' }],
+                                    max_tokens: 10
+                                }),
+                                timeout: 10000,
+                                onload: (resp) => {
+                                    if (resp.status === 200) {
+                                        testResult.style.background = '#e8f5e9';
+                                        testResult.style.color = '#2e7d32';
+                                        testResult.innerHTML = `✅ 连接成功！<br>模型: ${model}`;
+                                        resolve();
+                                    } else {
+                                        reject(new Error(`API 错误: ${resp.status}`));
+                                    }
+                                },
+                                onerror: reject,
+                                ontimeout: () => reject(new Error('连接超时'))
+                            });
                         }
                     },
-                    onerror: reject,
+                    onerror: () => {
+                        // 获取模型列表失败时，尝试 chat 接口
+                        GM_xmlhttpRequest({
+                            method: 'POST',
+                            url: `${baseUrl}/chat/completions`,
+                            headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                                'Content-Type': 'application/json'
+                            },
+                            data: JSON.stringify({
+                                model: model,
+                                messages: [{ role: 'user', content: 'test' }],
+                                max_tokens: 10
+                            }),
+                            timeout: 10000,
+                            onload: (resp) => {
+                                if (resp.status === 200) {
+                                    testResult.style.background = '#e8f5e9';
+                                    testResult.style.color = '#2e7d32';
+                                    testResult.innerHTML = `✅ 连接成功！<br>模型: ${model}`;
+                                    resolve();
+                                } else {
+                                    reject(new Error(`API 错误: ${resp.status}`));
+                                }
+                            },
+                            onerror: reject,
+                            ontimeout: () => reject(new Error('连接超时'))
+                        });
+                    },
                     ontimeout: () => reject(new Error('连接超时'))
                 });
             });
@@ -605,18 +687,20 @@
                 newConfig.ollamaUrl = url;
                 newConfig.ollamaModel = model;
             }
-            // 验证并保存 Infini 配置
-            else if (provider === 'infini') {
-                const apiKey = panel.querySelector('#infini-api-key-input').value.trim();
-                const model = panel.querySelector('#infini-model-input').value.trim();
+            // 验证并保存 OpenAI 兼容配置
+            else if (provider === 'openai') {
+                const baseUrl = panel.querySelector('#openai-base-url-input').value.trim().replace(/\/+$/, '');
+                const apiKey = panel.querySelector('#openai-api-key-input').value.trim();
+                const model = panel.querySelector('#openai-model-input').value.trim();
 
-                if (!apiKey || !model) {
-                    alert('❌ 请填写完整的 Infini-AI 配置！');
+                if (!baseUrl || !apiKey || !model) {
+                    alert('❌ 请填写完整的 OpenAI 兼容配置！');
                     return;
                 }
 
-                newConfig.infiniApiKey = apiKey;
-                newConfig.infiniModel = model;
+                newConfig.openaiBaseUrl = baseUrl;
+                newConfig.openaiApiKey = apiKey;
+                newConfig.openaiModel = model;
             }
 
             this.saveConfig(newConfig);
@@ -629,8 +713,9 @@
                 panel.querySelector('#ai-provider-select').value = DEFAULT_CONFIG.aiProvider;
                 panel.querySelector('#ollama-url-input').value = DEFAULT_CONFIG.ollamaUrl;
                 panel.querySelector('#ollama-model-input').value = DEFAULT_CONFIG.ollamaModel;
-                panel.querySelector('#infini-api-key-input').value = DEFAULT_CONFIG.infiniApiKey;
-                panel.querySelector('#infini-model-input').value = DEFAULT_CONFIG.infiniModel;
+                panel.querySelector('#openai-base-url-input').value = DEFAULT_CONFIG.openaiBaseUrl;
+                panel.querySelector('#openai-api-key-input').value = DEFAULT_CONFIG.openaiApiKey;
+                panel.querySelector('#openai-model-input').value = DEFAULT_CONFIG.openaiModel;
                 panel.querySelector('#max-length-input').value = DEFAULT_CONFIG.maxLength;
                 panel.querySelector('#ollama-prompt-input').value = DEFAULT_CONFIG.prompt;
                 
@@ -645,8 +730,8 @@
         async callAI(content) {
             const fullPrompt = this.config.prompt + '\n\n' + content;
             
-            if (this.config.aiProvider === 'infini') {
-                return await this.callInfiniAI(fullPrompt);
+            if (this.config.aiProvider === 'openai') {
+                return await this.callOpenAI(fullPrompt);
             } else {
                 return await this.callOllamaAPI(fullPrompt);
             }
@@ -687,22 +772,24 @@
             });
         }
 
-        callInfiniAI(prompt) {
+        callOpenAI(prompt) {
             return new Promise((resolve, reject) => {
-                if (!this.config.infiniApiKey) {
-                    reject(new Error('未配置 Infini API Key'));
+                if (!this.config.openaiApiKey) {
+                    reject(new Error('未配置 API Key'));
                     return;
                 }
 
+                const baseUrl = this.config.openaiBaseUrl.replace(/\/+$/, '');
+
                 GM_xmlhttpRequest({
                     method: 'POST',
-                    url: 'https://cloud.infini-ai.com/maas/v1/chat/completions',
+                    url: `${baseUrl}/chat/completions`,
                     headers: {
-                        'Authorization': `Bearer ${this.config.infiniApiKey}`,
+                        'Authorization': `Bearer ${this.config.openaiApiKey}`,
                         'Content-Type': 'application/json'
                     },
                     data: JSON.stringify({
-                        model: this.config.infiniModel,
+                        model: this.config.openaiModel,
                         messages: [
                             { role: 'user', content: prompt }
                         ]
@@ -718,7 +805,7 @@
                                 reject(new Error('解析响应失败'));
                             }
                         } else {
-                            reject(new Error(`Infini API 错误: ${response.status}`));
+                            reject(new Error(`API 错误: ${response.status}`));
                         }
                     },
                     onerror: (error) => {
@@ -731,7 +818,175 @@
             });
         }
 
+        // ============ 全文获取方法 ============
+
+        /**
+         * 从 URL 中提取微博的 mblogid
+         */
+        getMblogId(url) {
+            if (!url) return '';
+            try {
+                const parsedUrl = new URL(url, window.location.href);
+                const idFromQuery = parsedUrl.searchParams.get('id') ||
+                    parsedUrl.searchParams.get('mblogid') ||
+                    parsedUrl.searchParams.get('mid');
+                if (idFromQuery) return idFromQuery;
+
+                const parts = parsedUrl.pathname.split('/').filter(Boolean);
+                const statusIndex = parts.findIndex(part => part === 'status' || part === 'detail');
+                if (statusIndex >= 0 && /^[A-Za-z0-9]{6,}$/.test(parts[statusIndex + 1] || '')) {
+                    return parts[statusIndex + 1];
+                }
+
+                if (/^\d+$/.test(parts[0] || '') &&
+                    /^[A-Za-z0-9]{6,}$/.test(parts[1] || '') &&
+                    !/^\d+$/.test(parts[1])) {
+                    return parts[1];
+                }
+            } catch (e) {
+                return '';
+            }
+            return '';
+        }
+
+        /**
+         * 从 feed 项中提取 mblogid
+         */
+        getMblogIdFromFeed(feedItem) {
+            const S = OllamaSummarizer.SELECTORS;
+            const candidates = [
+                feedItem.querySelector(S.timeLink),
+                ...feedItem.querySelectorAll('a[href*="/status/"], a[href*="/detail/"], a[href*="/"][href]')
+            ];
+
+            for (const link of candidates) {
+                const href = link?.getAttribute?.('href');
+                if (!href) continue;
+
+                const mblogId = this.getMblogId(href);
+                if (!mblogId) continue;
+
+                try {
+                    const url = new URL(href, window.location.href);
+                    if (!/weibo\.com$/i.test(url.hostname) && !/\.weibo\.com$/i.test(url.hostname)) continue;
+                    return mblogId;
+                } catch (e) {
+                    continue;
+                }
+            }
+            return '';
+        }
+
+        /**
+         * 去除 HTML 标签，将 <br> 转为换行
+         */
+        stripHtml(text) {
+            if (!text) return '';
+            const textarea = document.createElement('textarea');
+            textarea.innerHTML = text;
+            return textarea.value
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        /**
+         * 从 API 响应中递归提取文本
+         */
+        collectTextRaw(value, texts = []) {
+            if (!value) return texts;
+
+            if (typeof value === 'string') {
+                const cleaned = this.stripHtml(value);
+                if (cleaned) texts.push(cleaned);
+                return texts;
+            }
+
+            if (Array.isArray(value)) {
+                value.forEach(item => this.collectTextRaw(item, texts));
+                return texts;
+            }
+
+            if (typeof value === 'object') {
+                ['text_raw', 'text', 'longTextContent'].forEach(key => {
+                    if (typeof value[key] === 'string') {
+                        const cleaned = this.stripHtml(value[key]);
+                        if (cleaned) texts.push(cleaned);
+                    }
+                });
+
+                ['retweeted_status', 'longText', 'status'].forEach(key => {
+                    if (value[key]) this.collectTextRaw(value[key], texts);
+                });
+            }
+
+            return texts;
+        }
+
+        /**
+         * 通过微博 API 获取全文
+         * @param {string} mblogId - 微博 ID
+         * @returns {Promise<string>} 全文文本
+         */
+        fetchFullText(mblogId) {
+            // 命中缓存
+            if (this.fullTextCache.has(mblogId)) {
+                return Promise.resolve(this.fullTextCache.get(mblogId));
+            }
+
+            return new Promise((resolve, reject) => {
+                const apiUrl = `https://weibo.com/ajax/statuses/show?id=${encodeURIComponent(mblogId)}`;
+
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: apiUrl,
+                    responseType: 'json',
+                    timeout: 8000,
+                    headers: {
+                        'Accept': 'application/json, text/plain, */*'
+                    },
+                    onload: (response) => {
+                        if (response.status === 200) {
+                            try {
+                                const data = response.response;
+                                const texts = this.collectTextRaw(data);
+                                const text = texts.sort((a, b) => b.length - a.length)[0] || '';
+                                this.fullTextCache.set(mblogId, text);
+                                resolve(text);
+                            } catch (e) {
+                                reject(new Error('解析 API 响应失败'));
+                            }
+                        } else {
+                            reject(new Error(`API 返回 HTTP ${response.status}`));
+                        }
+                    },
+                    onerror: () => {
+                        reject(new Error('网络请求失败'));
+                    },
+                    ontimeout: () => {
+                        reject(new Error('API 请求超时'));
+                    }
+                });
+            });
+        }
+
         // ============ 微博相关方法 ============
+
+        // Feed 项选择器（与微博综合屏蔽脚本保持一致）
+        static get SELECTORS() {
+            return {
+                feedBody: '._body_m3n8j_63',
+                feedContent: '.wbpro-feed-content',
+                feedText: '._wbtext_1psp9_14',
+                feedTextContainer: '._text_1psp9_2',
+                userLink: 'a[href*="/u/"]',
+                userName: '._link_1b05f_126',
+                userNameAlt: '._name_1b05f_122',
+                nickContainer: '._nick_1b05f_25',
+                suffixBox: '._suffixbox_1b05f_33',
+                iconsPlus: '._iconsPlus_1b05f_75',
+                timeLink: 'a[class*="_time_1tpft_33"]',
+            };
+        }
 
         observeFeed() {
             const observer = new MutationObserver((mutations) => {
@@ -754,37 +1009,83 @@
         }
 
         processFeedItems(container) {
-            const feedItems = container.querySelectorAll?.('.Feed_body_3R0rO') || [];
+            const S = OllamaSummarizer.SELECTORS;
+            const feedItems = container.querySelectorAll?.(S.feedBody) || [];
 
             feedItems.forEach((feedItem) => {
                 if (feedItem.querySelector('.weibo-ai-summary-btn')) return;
 
-                const header = feedItem.querySelector('.woo-box-flex');
-                const content = feedItem.querySelector('.detail_wbtext_4CRf9');
+                // 内容区域：优先用 .wbpro-feed-content，回退到 ._wbtext_1psp9_14
+                const content = feedItem.querySelector(S.feedContent) ||
+                                feedItem.querySelector(S.feedText);
 
-                if (header && content) {
-                    this.addSummaryButton(header, content);
-                }
+                if (!content) return;
+
+                this.addSummaryButton(feedItem);
             });
         }
 
-        addSummaryButton(header, contentElement) {
-            // 尝试多个可能的位置插入按钮，避免和用户名交互冲突
-            const possibleParents = [
-                header.querySelector('.head_main_4K3n4'), // 头部主容器
-                header.querySelector('.woo-box-flex'),    // flex 容器
-                header                                     // 最后兜底：直接插入 header
-            ];
+        addSummaryButton(feedItem) {
+            const S = OllamaSummarizer.SELECTORS;
 
-            let targetParent = null;
-            for (const parent of possibleParents) {
-                if (parent && !parent.classList.contains('head_name_24eEB')) {
-                    targetParent = parent;
-                    break;
+            // 参照综合屏蔽脚本 findBlockButtonContainer 的逻辑
+            let container = feedItem.querySelector(S.iconsPlus);
+            let parentBox = null;
+
+            if (!container) {
+                parentBox = feedItem.querySelector(`${S.nickContainer}, ${S.suffixBox}`);
+                if (parentBox) {
+                    container = document.createElement('div');
+                    container.className = 'woo-box-flex woo-box-alignCenter ' + S.iconsPlus.slice(1);
+                    parentBox.appendChild(container);
                 }
             }
 
-            if (!targetParent) return;
+            // 降级方案：在用户链接后插入
+            const fallbackInsert = () => {
+                const userLink = feedItem.querySelector(S.userLink);
+                if (!userLink) return null;
+                const btn = document.createElement('button');
+                btn.className = 'weibo-ai-summary-btn';
+                btn.textContent = 'AI 概括';
+                Object.assign(btn.style, {
+                    padding: '2px 8px',
+                    border: '1px solid #d0d0d0',
+                    borderRadius: '3px',
+                    background: 'transparent',
+                    color: '#8590a6',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s',
+                    flexShrink: '0',
+                    marginLeft: '8px',
+                    verticalAlign: 'middle'
+                });
+                btn.addEventListener('mouseenter', () => {
+                    btn.style.borderColor = '#667eea';
+                    btn.style.color = '#667eea';
+                    btn.style.background = 'rgba(102, 126, 234, 0.05)';
+                });
+                btn.addEventListener('mouseleave', () => {
+                    btn.style.borderColor = '#d0d0d0';
+                    btn.style.color = '#8590a6';
+                    btn.style.background = 'transparent';
+                });
+                btn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
+                    const content = feedItem.querySelector(S.feedContent) || feedItem.querySelector(S.feedText);
+                    if (content) this.summarizeContent(content, btn);
+                });
+                userLink.parentNode.insertBefore(btn, userLink.nextSibling);
+                return btn;
+            };
+
+            if (!container) {
+                fallbackInsert();
+                return;
+            }
 
             // 创建按钮容器，独立于用户名
             const buttonContainer = document.createElement('div');
@@ -799,17 +1100,17 @@
             const button = document.createElement('button');
             button.className = 'weibo-ai-summary-btn';
             button.textContent = 'AI 概括';
-            button.style.cssText = `
-                padding: 2px 8px;
-                border: 1px solid #d0d0d0;
-                border-radius: 3px;
-                background: transparent;
-                color: #8590a6;
-                font-size: 12px;
-                cursor: pointer;
-                transition: all 0.2s;
-                flex-shrink: 0;
-            `;
+            Object.assign(button.style, {
+                padding: '2px 8px',
+                border: '1px solid #d0d0d0',
+                borderRadius: '3px',
+                background: 'transparent',
+                color: '#8590a6',
+                fontSize: '12px',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                flexShrink: '0',
+            });
 
             // 悬停效果
             button.addEventListener('mouseenter', () => {
@@ -829,7 +1130,8 @@
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
-                this.summarizeContent(contentElement, button);
+                const content = feedItem.querySelector(S.feedContent) || feedItem.querySelector(S.feedText);
+                if (content) this.summarizeContent(content, button);
             });
 
             // 阻止容器的点击事件冒泡
@@ -838,19 +1140,7 @@
             });
 
             buttonContainer.appendChild(button);
-
-            // 插入到合适的位置
-            if (targetParent === header) {
-                // 如果是直接插入 header，添加到第一个子元素后面
-                const firstChild = header.firstElementChild;
-                if (firstChild && firstChild.nextSibling) {
-                    header.insertBefore(buttonContainer, firstChild.nextSibling);
-                } else {
-                    header.appendChild(buttonContainer);
-                }
-            } else {
-                targetParent.appendChild(buttonContainer);
-            }
+            container.appendChild(buttonContainer);
         }
 
         async summarizeContent(contentElement, button) {
@@ -859,15 +1149,43 @@
             button.disabled = true;
 
             try {
-                const content = this.extractTextContent(contentElement);
+                // 优先通过 API 获取完整微博原文
+                let content = '';
+
+                // 从按钮所在的 feedItem 中提取 mblogid
+                const feedItem = button.closest(OllamaSummarizer.SELECTORS.feedBody);
+                const mblogId = feedItem ? this.getMblogIdFromFeed(feedItem) : '';
+
+                if (mblogId) {
+                    try {
+                        const fullText = await this.fetchFullText(mblogId);
+                        if (fullText && fullText.length > 50) {
+                            content = fullText.substring(0, this.config.maxLength);
+                        }
+                    } catch (apiError) {
+                        console.warn('API 获取全文失败，回退到 DOM 提取:', apiError.message);
+                    }
+                }
+
+                // API 没取到，回退到 DOM 提取
+                if (!content) {
+                    content = this.extractTextContent(contentElement);
+                    if (!content) {
+                        throw new Error('无法获取微博内容');
+                    }
+                }
+
                 const summary = await this.callAI(content);
                 this.showSummaryPopup(summary, contentElement);
             } catch (error) {
                 console.error('概括失败:', error);
+                const message = error.message.includes('API')
+                    ? `API 获取全文失败: ${error.message}`
+                    : `概括失败: ${error.message}`;
                 GM_notification({
-                    text: `概括失败: ${error.message}`,
+                    text: message,
                     title: 'AI 概括错误',
-                    timeout: 3000
+                    timeout: 5000
                 });
             } finally {
                 button.textContent = originalText;
@@ -884,75 +1202,81 @@
         }
 
         showSummaryPopup(summary, contentElement) {
-            // 移除已存在的弹窗
-            const existingPopup = document.querySelector('.weibo-summary-popup');
-            if (existingPopup) {
-                existingPopup.remove();
+            const S = OllamaSummarizer.SELECTORS;
+            const feedItem = contentElement.closest(S.feedBody);
+
+            // 先移除该 feed 中已有的概括
+            const existing = feedItem ? feedItem.querySelector('.weibo-summary-inline') : document.querySelector('.weibo-summary-inline');
+            if (existing) existing.remove();
+
+            if (!feedItem) {
+                // 兜底：找不到 feedItem 时直接追加到 contentElement 前面
+                const inline = this.createSummaryElement(summary);
+                contentElement.parentNode.insertBefore(inline, contentElement);
+                return;
             }
 
-            const colors = getColors();
+            // 找到内容区域，将概括插入到内容文本之前
+            const contentArea = feedItem.querySelector(S.feedContent) || feedItem.querySelector(S.feedText);
+            if (!contentArea) return;
 
-            const popup = document.createElement('div');
-            popup.className = 'weibo-summary-popup';
-            popup.style.cssText = `
-                position: absolute;
+            const inline = this.createSummaryElement(summary);
+            contentArea.parentNode.insertBefore(inline, contentArea);
+        }
+
+        createSummaryElement(summary) {
+            const colors = getColors();
+            const providerName = this.config.aiProvider === 'openai'
+                ? `OpenAI (${this.config.openaiModel})`
+                : `Ollama (${this.config.ollamaModel})`;
+
+            const container = document.createElement('div');
+            container.className = 'weibo-summary-inline';
+            container.style.cssText = `
+                margin: 8px 0;
+                padding: 12px 14px;
                 background: ${colors.panelBg};
                 border: 1px solid ${colors.panelBorder};
                 border-radius: 8px;
-                padding: 15px;
-                max-width: 400px;
-                box-shadow: ${colors.shadow};
-                z-index: 1000;
                 font-family: system-ui, -apple-system, sans-serif;
                 font-size: 14px;
-                line-height: 1.5;
+                line-height: 1.6;
                 color: ${colors.textPrimary};
+                box-shadow: ${colors.shadow};
             `;
 
-            const providerName = this.config.aiProvider === 'infini' 
-                ? `Infini-AI (${this.config.infiniModel})`
-                : `Ollama (${this.config.ollamaModel})`;
-
-            popup.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <strong style="color: #667eea;">AI 概括</strong>
-                    <button class="close-popup" style="background: none; border: none; font-size: 16px; cursor: pointer; color: ${colors.textSecondary};">×</button>
+            container.innerHTML = `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <strong style="color: #667eea; font-size: 13px;">📝 AI 概括</strong>
+                    <button class="close-summary" style="
+                        background: none;
+                        border: none;
+                        font-size: 18px;
+                        cursor: pointer;
+                        color: ${colors.textSecondary};
+                        padding: 0 4px;
+                        line-height: 1;
+                    ">×</button>
                 </div>
-                <div class="summary-content" style="white-space: pre-wrap; margin-bottom: 10px;">${summary}</div>
-                <div style="font-size: 12px; color: ${colors.textSecondary}; text-align: right;">
+                <div style="white-space: pre-wrap; word-break: break-word;">${summary}</div>
+                <div style="font-size: 11px; color: ${colors.textSecondary}; text-align: right; margin-top: 6px;">
                     ${providerName}
                 </div>
             `;
 
-            // 定位弹窗
-            const rect = contentElement.getBoundingClientRect();
-            popup.style.top = `${rect.bottom + window.scrollY + 10}px`;
-            popup.style.left = `${rect.left + window.scrollX}px`;
-
-            document.body.appendChild(popup);
-
-            // 关闭按钮事件
-            popup.querySelector('.close-popup').addEventListener('click', () => {
-                popup.remove();
+            // 关闭按钮
+            container.querySelector('.close-summary').addEventListener('click', () => {
+                container.remove();
             });
 
-            // 点击外部关闭
-            setTimeout(() => {
-                const closeHandler = (e) => {
-                    if (!popup.contains(e.target)) {
-                        popup.remove();
-                        document.removeEventListener('click', closeHandler);
-                    }
-                };
-                document.addEventListener('click', closeHandler);
-            }, 100);
+            return container;
         }
     }
 
     // 初始化
     let initialized = false;
     function init() {
-        if (!initialized && document.querySelector('.Feed_body_3R0rO')) {
+        if (!initialized && document.querySelector('._body_m3n8j_63')) {
             initialized = true;
             new OllamaSummarizer();
         }
