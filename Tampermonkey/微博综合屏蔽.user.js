@@ -45,6 +45,10 @@
     const DEFAULT_SOURCE_KEYWORDS = [
     ];
 
+    // 默认超话关键词
+    const DEFAULT_SUPER_TOPIC_KEYWORDS = [
+    ];
+
     // 为所有存储键添加脚本专属前缀
     const STORAGE_PREFIX = 'sixiaolong1117_weibo_';
     const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
@@ -127,6 +131,7 @@
     let keywords = GM_getValue(STORAGE_PREFIX + 'keywords', DEFAULT_KEYWORDS);
     let blockedIds = GM_getValue(STORAGE_PREFIX + 'blocked_ids', DEFAULT_BLOCKED_IDS);
     let sourceKeywords = GM_getValue(STORAGE_PREFIX + 'source_keywords', DEFAULT_SOURCE_KEYWORDS);
+    let superTopicKeywords = GM_getValue(STORAGE_PREFIX + 'super_topic_keywords', DEFAULT_SUPER_TOPIC_KEYWORDS);
     let timeFilterDays = GM_getValue(TIME_FILTER_DAYS_KEY, 0);
     let keywordManager = null;
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
@@ -529,6 +534,7 @@
         `   resetHiddenStats() - 重置统计计数\n` +
         `💡 功能: 按 F8 将选中文本添加到屏蔽词\n` +
         `💡 功能: 按 F9 将选中文本添加到来源屏蔽词\n` +
+        `💡 功能: 按 F10 将选中文本添加到超话屏蔽词\n` +
         `💡 功能: 点击用户名称旁的"屏蔽"按钮屏蔽该用户\n` +
         `💡 功能: 长微博全文检测${autoExpandEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
         `💡 功能: 自动主题${autoSwitchThemeEnabled ? '已启用' : '未启用，可在菜单中开启'}\n` +
@@ -541,6 +547,7 @@
             `🏷️ 屏蔽标签: ${HIDDEN_TAGS.join(', ')}\n` +
             `🔤 屏蔽关键词: ${keywords.length} 个\n` +
             `📱 屏蔽来源: ${sourceKeywords.length} 个\n` +
+            `🏷️ 屏蔽超话: ${superTopicKeywords.length} 个\n` +
             `👤 屏蔽用户ID: ${blockedIds.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '已禁用'}\n` +
             `🏠 首页跳转: ${redirectHomeToMyGroupsEnabled ? '已启用' : '未启用'}\n` +
@@ -552,6 +559,7 @@
             `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
             `⌨️  按 F8 添加选中文本到屏蔽词\n` +
             `⌨️  按 F9 添加选中文本到来源屏蔽词\n` +
+            `⌨️  按 F10 添加选中文本到超话屏蔽词\n` +
             `⏰ 启动时间: ${new Date().toLocaleString()}`,
             'background: #ff6b35; color: white; padding: 5px; border-radius: 3px;'
         );
@@ -947,6 +955,7 @@
             keywords: keywords,
             blockedIds: blockedIds,
             sourceKeywords: sourceKeywords,
+            superTopicKeywords: superTopicKeywords,
             timeFilterDays: timeFilterDays,
             lastModified: Date.now(),
             reason,
@@ -990,7 +999,7 @@
     // 合并
     function mergeFields(data) {
         let updated = false;
-        ['keywords', 'blockedIds', 'sourceKeywords'].forEach(key => {
+        ['keywords', 'blockedIds', 'sourceKeywords', 'superTopicKeywords'].forEach(key => {
             if (Array.isArray(data[key])) {
                 window[key] = data[key];
                 GM_setValue(STORAGE_PREFIX + key.toLowerCase(), data[key]);
@@ -1156,22 +1165,25 @@
     }
 
     // 保存关键词函数
-    function saveKeywordsAndSync(newKeywords, newBlockedIds, newSourceKeywords, reason = '手动修改') {
+    function saveKeywordsAndSync(newKeywords, newBlockedIds, newSourceKeywords, newSuperTopicKeywords, reason = '手动修改') {
         // ✅ 更新内存数据
         keywords = ensureArray(newKeywords, keywords);
         blockedIds = ensureArray(newBlockedIds, blockedIds);
         sourceKeywords = ensureArray(newSourceKeywords, sourceKeywords);
+        superTopicKeywords = ensureArray(newSuperTopicKeywords, superTopicKeywords);
 
         // ✅ 本地保存（始终执行）
         GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
         GM_setValue(STORAGE_PREFIX + 'blocked_ids', blockedIds);
         GM_setValue(STORAGE_PREFIX + 'source_keywords', sourceKeywords);
+        GM_setValue(STORAGE_PREFIX + 'super_topic_keywords', superTopicKeywords);
         GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
 
         console.log(`📦 已保存到本地 (${reason})：`, {
             keywordsCount: keywords.length,
             blockedIdsCount: blockedIds.length,
             sourceKeywordsCount: sourceKeywords.length,
+            superTopicKeywordsCount: superTopicKeywords.length,
             timeFilterDays: timeFilterDays
         });
 
@@ -1219,6 +1231,7 @@
         const safeSourceKeywords = Array.isArray(sourceKeywords) ? sourceKeywords : [];
         const safeKeywords = Array.isArray(keywords) ? keywords : [];
         const safeBlockedIds = Array.isArray(blockedIds) ? blockedIds : [];
+        const safeSuperTopicKeywords = Array.isArray(superTopicKeywords) ? superTopicKeywords : [];
 
         // 创建管理器模态框
         const manager = document.createElement('div');
@@ -1233,10 +1246,12 @@
                     <button class="tab active" data-tab="keywords">关键词屏蔽</button>
                     <button class="tab" data-tab="sources">来源屏蔽</button>
                     <button class="tab" data-tab="ids">用户ID屏蔽</button>
+                    <button class="tab" data-tab="supertopics">超话屏蔽</button>
                 </div>
                 <textarea id="keywords-textarea" placeholder="每行一个关键词&#10;&#10;普通关键词示例：&#10;推广&#10;营销&#10;&#10;正则表达式示例：&#10;/推广.*活动/&#10;/\\d+元优惠/&#10;">${safeKeywords.join('\n')}</textarea>
                 <textarea id="sources-textarea" placeholder="每行一个来源关键词&#10;&#10;来源关键词示例：&#10;iPhone客户端&#10;微博 weibo.com&#10;HUAWEI&#10;&#10;正则表达式示例：&#10;/iPhone.*客户端/&#10;/.*广告平台.*/" style="display: none;">${safeSourceKeywords.join('\n')}</textarea>
                 <textarea id="ids-textarea" placeholder="每行一个用户ID&#10;&#10;用户ID示例：&#10;6510119885&#10;1234567890&#10;&#10;注意：用户ID是数字ID，不是昵称" style="display: none;">${safeBlockedIds.join('\n')}</textarea>
+                <textarea id="supertopics-textarea" placeholder="每行一个超话关键词&#10;&#10;超话关键词示例：&#10;黑袍纠察队&#10;FGO&#10;&#10;正则表达式示例：&#10;/.*KPL.*/&#10;/^韩剧/" style="display: none;">${safeSuperTopicKeywords.join('\n')}</textarea>
                 <div class="button-group">
                     <button class="close-btn">取消</button>
                     <button class="save-btn">保存</button>
@@ -1265,6 +1280,14 @@
                         <div>• 点击微博旁的"屏蔽"按钮可快速添加用户ID</div>
                         <div>• 屏蔽后该用户的所有微博都将被隐藏</div>
                     </div>
+                    <div id="supertopics-help" style="display: none;">
+                        <div><strong>超话屏蔽说明：</strong></div>
+                        <div>• 每行输入一个超话关键词</div>
+                        <div>• 仅对带有超话标签的微博执行屏蔽</div>
+                        <div>• 支持正则表达式匹配</div>
+                        <div>• 按 F10 键将选中文本添加到超话屏蔽词</div>
+                        <div>• 无超话标签的微博不受影响</div>
+                    </div>
                 </div>
             </div>
         `;
@@ -1274,12 +1297,14 @@
         const textareas = {
             keywords: manager.querySelector('#keywords-textarea'),
             sources: manager.querySelector('#sources-textarea'),
-            ids: manager.querySelector('#ids-textarea')
+            ids: manager.querySelector('#ids-textarea'),
+            supertopics: manager.querySelector('#supertopics-textarea')
         };
         const helps = {
             keywords: manager.querySelector('#keywords-help'),
             sources: manager.querySelector('#sources-help'),
-            ids: manager.querySelector('#ids-help')
+            ids: manager.querySelector('#ids-help'),
+            supertopics: manager.querySelector('#supertopics-help')
         };
 
         tabs.forEach(tab => {
@@ -1303,6 +1328,7 @@
             const keywordsText = textareas.keywords.value;
             const sourcesText = textareas.sources.value;
             const idsText = textareas.ids.value;
+            const supertopicsText = textareas.supertopics.value;
 
             // 更新全局变量
             keywords = keywordsText.split('\n')
@@ -1317,7 +1343,11 @@
                 .map(line => line.trim())
                 .filter(line => line.length > 0);
 
-            saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, '通过管理器修改');
+            superTopicKeywords = supertopicsText.split('\n')
+                .map(line => line.trim())
+                .filter(line => line.length > 0);
+
+            saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, superTopicKeywords, '通过管理器修改');
 
             // 关闭管理器
             overlay.remove();
@@ -1397,6 +1427,28 @@
             } else {
                 // 普通关键词
                 if (sourceText.includes(keyword)) {
+                    return { type: 'normal', keyword: keyword };
+                }
+            }
+        }
+        return null;
+    }
+
+    // 检查超话是否匹配关键词
+    function isSuperTopicMatched(topicText) {
+        for (const keyword of superTopicKeywords) {
+            if (keyword.startsWith('/') && keyword.endsWith('/')) {
+                try {
+                    const pattern = keyword.slice(1, -1);
+                    const regex = new RegExp(pattern);
+                    if (regex.test(topicText)) {
+                        return { type: 'regex', keyword: keyword };
+                    }
+                } catch (e) {
+                    console.warn('无效的正则表达式:', keyword, e);
+                }
+            } else {
+                if (topicText.includes(keyword)) {
                     return { type: 'normal', keyword: keyword };
                 }
             }
@@ -1553,7 +1605,7 @@
                 if (!keywords.includes(selectedText)) {
                     // 添加到关键词列表
                     keywords.push(selectedText);
-                    saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, `快捷键添加: ${selectedText}`);
+                    saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, superTopicKeywords, `快捷键添加: ${selectedText}`);
 
                     // 显示成功提示
                     showNotification(`✅ 已添加屏蔽词: "${selectedText}"`);
@@ -1586,7 +1638,7 @@
                 if (!sourceKeywords.includes(selectedText)) {
                     // 添加到来源关键词列表
                     const newSourceKeywords = [...sourceKeywords, selectedText];
-                    saveKeywordsAndSync(keywords, blockedIds, newSourceKeywords, `快捷键添加来源: ${selectedText}`);
+                    saveKeywordsAndSync(keywords, blockedIds, newSourceKeywords, superTopicKeywords, `快捷键添加来源: ${selectedText}`);
 
                     // 显示成功提示
                     showNotification(`✅ 已添加来源屏蔽词: "${selectedText}"`);
@@ -1603,6 +1655,39 @@
                 }
             } else {
                 showNotification('⚠️ 请先选择要屏蔽的来源文本');
+            }
+        }
+
+        // 检查是否按下了 F10 键（keyCode 121）
+        if (event.keyCode === 121 && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey) {
+            const selectedText = window.getSelection().toString().trim();
+
+            if (selectedText && selectedText.length > 0) {
+                // 防止默认行为
+                event.preventDefault();
+                event.stopPropagation();
+
+                // 检查是否已存在该超话关键词
+                if (!superTopicKeywords.includes(selectedText)) {
+                    // 添加到超话关键词列表
+                    const newSuperTopicKeywords = [...superTopicKeywords, selectedText];
+                    saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, newSuperTopicKeywords, `快捷键添加超话: ${selectedText}`);
+
+                    // 显示成功提示
+                    showNotification(`✅ 已添加超话屏蔽词: "${selectedText}"`);
+
+                    // 立即执行一次匹配处理
+                    hideContent();
+
+                    // 强制更新页面布局
+                    forceLayoutUpdate();
+
+                    console.log(`✅ 快捷键添加超话屏蔽词: "${selectedText}"`);
+                } else {
+                    showNotification(`ℹ️ 超话屏蔽词已存在: "${selectedText}"`);
+                }
+            } else {
+                showNotification('⚠️ 请先选择要屏蔽的超话文本');
             }
         }
     }
@@ -1683,7 +1768,7 @@
                 // 添加用户ID到屏蔽列表
                 if (!blockedIds.includes(userId)) {
                     const newBlockedIds = [...blockedIds, userId];
-                    saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, `屏蔽用户: ${userName}`);
+                    saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, superTopicKeywords, `屏蔽用户: ${userName}`);
 
                     console.log(`✅ 已屏蔽用户: "${userName}" (ID: ${userId})`);
 
@@ -1757,7 +1842,7 @@
                     // 添加用户ID到屏蔽列表
                     if (!blockedIds.includes(userId)) {
                         const newBlockedIds = [...blockedIds, userId];
-                        saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, `屏蔽评论用户: ${userName}`);
+                        saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, superTopicKeywords, `屏蔽评论用户: ${userName}`);
 
                         console.log(`✅ 已屏蔽评论用户: "${userName}" (ID: ${userId})`);
                         showNotification(`已屏蔽用户: ${userName}`);
@@ -1968,6 +2053,7 @@
         tasks.push(() => hideByKeywords());
         tasks.push(() => hideByUserId());
         tasks.push(() => hideBySourceKeywords());
+        tasks.push(() => hideBySuperTopic());
         tasks.push(() => hideByTimeFilter());
         tasks.push(() => hideCommentsByUserId());
         tasks.push(() => hideByAIContent());
@@ -2118,6 +2204,49 @@
                     logHiddenContent('来源', sourceText, feedBody,
                         `${matchResult.type}: ${matchResult.keyword}`);
                 }
+            }
+        });
+    }
+
+    // 通过超话关键词屏蔽
+    function hideBySuperTopic() {
+        if (!superTopicKeywords || superTopicKeywords.length === 0) return;
+
+        // 查找所有带有超话标签的微博
+        const feedBodies = document.querySelectorAll(SELECTORS.feedBody);
+
+        feedBodies.forEach(feedBody => {
+            // 只处理有超话标签的微博
+            const chaohuaIcon = feedBody.querySelector('img[class*="chaohua"], img[class*="Chaohua"], ._chaohuaIcon_1b05f_166');
+            const superTextLink = feedBody.querySelector('a[class*="superText"], a[class*="_superText_"]');
+            if (!chaohuaIcon && !superTextLink) return;
+
+            // 获取超话文本
+            let topicText = '';
+            if (superTextLink) {
+                const span = superTextLink.querySelector('span');
+                topicText = span?.getAttribute('title') || span?.textContent || superTextLink.textContent || '';
+            }
+            if (!topicText && chaohuaIcon) {
+                // 尝试从附近的超话链接获取
+                const nearbyLink = feedBody.querySelector('a[href*="huati.weibo.com"] span');
+                topicText = nearbyLink?.getAttribute('title') || nearbyLink?.textContent || '';
+            }
+
+            topicText = topicText.trim();
+            if (!topicText) return;
+
+            const matchResult = isSuperTopicMatched(topicText);
+            if (!matchResult) return;
+
+            const displayKeyword = matchResult.type === 'regex'
+                ? `正则: ${matchResult.keyword}`
+                : matchResult.keyword;
+
+            const message = `已屏蔽超话"${topicText}"（匹配关键词: ${displayKeyword}）`;
+            if (applyHiddenStyle(feedBody, message, 'supertopic')) {
+                logHiddenContent('超话', topicText, feedBody,
+                    `${matchResult.type}: ${matchResult.keyword}`);
             }
         });
     }
