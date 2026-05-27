@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X 翻译姬
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.4
+// @version      0.5
 // @description  将推文翻译为简体中文，并在下方显示
 // @license      MIT
 // @icon         https://x.com/favicon.ico
@@ -21,12 +21,15 @@
 
     // 已翻译的元素集合，避免重复翻译
     const translatedElements = new WeakSet();
+    // 已添加按钮的元素集合，避免重复添加按钮
+    const buttonAddedElements = new WeakSet();
 
     // 默认设置
     const DEFAULT_SETTINGS = {
         translationSource: 'google',
         sourceLang: 'auto',
-        targetLang: 'zh-CN'
+        targetLang: 'zh-CN',
+        autoTranslate: false
     };
 
     // 获取当前设置
@@ -34,14 +37,18 @@
         return {
             translationSource: GM_getValue('translationSource', DEFAULT_SETTINGS.translationSource),
             sourceLang: GM_getValue('sourceLang', DEFAULT_SETTINGS.sourceLang),
-            targetLang: GM_getValue('targetLang', DEFAULT_SETTINGS.targetLang)
+            targetLang: GM_getValue('targetLang', DEFAULT_SETTINGS.targetLang),
+            autoTranslate: GM_getValue('autoTranslate', DEFAULT_SETTINGS.autoTranslate)
         };
     }
 
     // 保存设置
     function saveSetting(key, value) {
         GM_setValue(key, value);
-        location.reload();
+        // 对于 autoTranslate 设置，不需要刷新页面
+        if (key !== 'autoTranslate') {
+            location.reload();
+        }
     }
 
     // 翻译源配置
@@ -109,6 +116,11 @@
     function registerMenuCommands() {
         const settings = getSettings();
 
+        // 自动翻译开关
+        GM_registerMenuCommand(`🔄 自动翻译: ${settings.autoTranslate ? '开启' : '关闭'}`, () => {
+            saveSetting('autoTranslate', !settings.autoTranslate);
+        });
+
         // 翻译源选择
         GM_registerMenuCommand(`🌐 翻译源: ${TRANSLATION_SOURCES[settings.translationSource]}`, () => {
             const sources = Object.keys(TRANSLATION_SOURCES);
@@ -134,6 +146,7 @@
                 saveSetting('translationSource', DEFAULT_SETTINGS.translationSource);
                 saveSetting('sourceLang', DEFAULT_SETTINGS.sourceLang);
                 saveSetting('targetLang', DEFAULT_SETTINGS.targetLang);
+                saveSetting('autoTranslate', DEFAULT_SETTINGS.autoTranslate);
             }
         });
     }
@@ -157,21 +170,26 @@
     // Google翻译API
     async function translateWithGoogle(text, sourceLang, targetLang) {
         const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+        console.log('[翻译姬] 📡 Google翻译请求:', { sourceLang, targetLang, textLen: text.length });
 
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
                 onload: function (response) {
+                    console.log('[翻译姬] 📨 Google翻译响应状态:', response.status);
                     try {
                         const result = JSON.parse(response.responseText);
                         const translatedText = result[0].map(item => item[0]).join('');
+                        console.log('[翻译姬] 📨 Google翻译结果长度:', translatedText.length);
                         resolve(translatedText);
                     } catch (e) {
+                        console.error('[翻译姬] ❌ Google翻译解析失败:', e.message, '原始响应:', response.responseText.substring(0, 200));
                         reject(e);
                     }
                 },
                 onerror: function (error) {
+                    console.error('[翻译姬] ❌ Google翻译网络错误:', error);
                     reject(error);
                 }
             });
@@ -182,24 +200,30 @@
     async function translateWithMyMemory(text, sourceLang, targetLang) {
         const langPair = `${sourceLang === 'auto' ? 'en' : sourceLang}|${targetLang}`;
         const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${langPair}`;
+        console.log('[翻译姬] 📡 MyMemory翻译请求:', { langPair, textLen: text.length });
 
         return new Promise((resolve, reject) => {
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
                 onload: function (response) {
+                    console.log('[翻译姬] 📨 MyMemory翻译响应状态:', response.status);
                     try {
                         const result = JSON.parse(response.responseText);
                         if (result.responseStatus === 200) {
+                            console.log('[翻译姬] 📨 MyMemory翻译结果长度:', result.responseData.translatedText.length);
                             resolve(result.responseData.translatedText);
                         } else {
+                            console.error('[翻译姬] ❌ MyMemory翻译失败，状态:', result.responseStatus);
                             reject(new Error('Translation failed'));
                         }
                     } catch (e) {
+                        console.error('[翻译姬] ❌ MyMemory翻译解析失败:', e.message);
                         reject(e);
                     }
                 },
                 onerror: function (error) {
+                    console.error('[翻译姬] ❌ MyMemory翻译网络错误:', error);
                     reject(error);
                 }
             });
@@ -301,6 +325,59 @@
         return textParts.join(' ');
     }
 
+    // 创建翻译按钮
+    function createTranslateButton(element, isTrend = false) {
+        const colors = getThemeColors();
+        const settings = getSettings();
+        
+        const button = document.createElement('button');
+        button.className = 'x-translator-button';
+        button.style.cssText = `
+            margin-top: 8px;
+            padding: 4px 12px;
+            background-color: ${colors.background};
+            border: 1px solid ${colors.border};
+            border-radius: 16px;
+            font-size: 13px;
+            color: ${colors.headerText};
+            cursor: pointer;
+            transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+        `;
+        button.textContent = '🌐 翻译';
+        
+        // 悬停效果
+        button.addEventListener('mouseenter', () => {
+            button.style.backgroundColor = 'rgba(29, 155, 240, 0.1)';
+            button.style.borderColor = '#1d9bf0';
+            button.style.color = '#1d9bf0';
+        });
+        
+        button.addEventListener('mouseleave', () => {
+            button.style.backgroundColor = colors.background;
+            button.style.borderColor = colors.border;
+            button.style.color = colors.headerText;
+        });
+        
+        // 点击翻译
+        button.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            console.log('[翻译姬] 🔘 用户点击翻译按钮');
+            
+            // 移除按钮自身
+            if (button.parentNode) {
+                button.parentNode.removeChild(button);
+            }
+            buttonAddedElements.delete(element);
+            
+            // 执行翻译
+            processTranslation(element, isTrend, true);
+        });
+        
+        return button;
+    }
+
     // 创建占位翻译框
     function createPlaceholderBox() {
         const settings = getSettings();
@@ -393,22 +470,34 @@
                 }
             }
         });
+
+        // 更新翻译按钮的主题
+        const buttons = document.querySelectorAll('.x-translator-button');
+        buttons.forEach(button => {
+            button.style.backgroundColor = colors.background;
+            button.style.borderColor = colors.border;
+            button.style.color = colors.headerText;
+        });
     }
 
     // 处理翻译
-    async function processTranslation(element, isTrend = false) {
+    async function processTranslation(element, isTrend = false, isManualClick = false) {
         // 如果已经翻译过，跳过
         if (translatedElements.has(element)) {
+            console.log('[翻译姬] ⏭️ 元素已翻译过，跳过');
             return;
         }
 
-        // 标记为已处理
-        translatedElements.add(element);
+        // 获取设置
+        const settings = getSettings();
+        console.log('[翻译姬] 📋 当前设置:', JSON.stringify(settings));
 
         // 提取纯文本内容
         const originalText = extractPlainText(element);
+        console.log('[翻译姬] 📝 提取到文本:', originalText.substring(0, 80) + (originalText.length > 80 ? '...' : ''));
 
         if (originalText.length === 0) {
+            console.log('[翻译姬] ⚠️ 文本为空，跳过');
             return;
         }
 
@@ -416,13 +505,38 @@
         if (isTrend) {
             // 排除"xx的趋势"这类描述性文字
             if (originalText.match(/的趋势|条推文|Trending|posts?$/i)) {
+                console.log('[翻译姬] ⏭️ 热搜描述性文字，跳过');
                 return;
             }
             // 如果文本太短（少于2个字符），也跳过
             if (originalText.length < 2) {
+                console.log('[翻译姬] ⏭️ 热搜文本太短，跳过');
                 return;
             }
         }
+
+        // 如果自动翻译关闭且不是手动点击，只添加翻译按钮
+        if (!settings.autoTranslate && !isManualClick) {
+            if (buttonAddedElements.has(element)) {
+                console.log('[翻译姬] ⏭️ 按钮已存在，跳过');
+                return;
+            }
+            // 标记为已添加按钮
+            buttonAddedElements.add(element);
+            
+            const button = createTranslateButton(element, isTrend);
+            const parentContainer = element.parentElement;
+            if (parentContainer) {
+                parentContainer.insertBefore(button, element.nextSibling);
+                console.log('[翻译姬] 🔘 已添加翻译按钮');
+            } else {
+                console.log('[翻译姬] ⚠️ 无法找到父容器，未添加按钮');
+            }
+            return;
+        }
+
+        // 标记为已翻译
+        translatedElements.add(element);
 
         // 创建占位框并立即插入到页面
         const placeholderBox = createPlaceholderBox();
@@ -434,15 +548,20 @@
         try {
             // 保护特殊元素
             const { protectedText, protectedElements } = protectSpecialElements(originalText);
+            console.log('[翻译姬] 🔄 保护后的文本:', protectedText.substring(0, 80) + (protectedText.length > 80 ? '...' : ''));
 
             // 翻译文本
+            console.log('[翻译姬] 🚀 开始请求翻译API (' + settings.translationSource + ')...');
             const rawTranslatedText = await translateText(protectedText);
+            console.log('[翻译姬] ✅ 翻译API返回:', rawTranslatedText.substring(0, 80) + (rawTranslatedText.length > 80 ? '...' : ''));
 
             // 恢复特殊元素
             const translatedText = restoreSpecialElements(rawTranslatedText, protectedElements);
+            console.log('[翻译姬] 🔄 恢复后文本:', translatedText.substring(0, 80) + (translatedText.length > 80 ? '...' : ''));
 
             // 如果翻译结果与原文相同，说明可能已经是目标语言，移除占位框
             if (translatedText === originalText) {
+                console.log('[翻译姬] ⚠️ 翻译结果与原文相同，可能是目标语言，移除翻译框');
                 if (placeholderBox.parentNode) {
                     placeholderBox.parentNode.removeChild(placeholderBox);
                 }
@@ -451,9 +570,10 @@
 
             // 更新占位框内容为翻译结果
             updateTranslationBox(placeholderBox, translatedText);
+            console.log('[翻译姬] ✅ 翻译完成并显示');
 
         } catch (e) {
-            console.error('翻译失败:', e);
+            console.error('[翻译姬] ❌ 翻译失败:', e.message || e);
             // 更新占位框内容为错误信息
             updateTranslationBoxError(placeholderBox, e.message || '未知错误');
         }
@@ -535,15 +655,47 @@
 
     // 查找并翻译所有内容
     function findAndTranslateAll() {
+        console.log('[翻译姬] 🔍 扫描页面内容...');
         findAndTranslateTweets();
         findAndTranslateUserDescription();
         findAndTranslateTrends();
         findAndTranslateCommunityNotes();
     }
 
-    // 监听DOM变化，处理动态加载的内容
+    // 防抖函数，避免过于频繁的翻译请求
+    let debounceTimer = null;
+    function debouncedFindAndTranslateAll() {
+        if (debounceTimer) {
+            clearTimeout(debounceTimer);
+        }
+        debounceTimer = setTimeout(() => {
+            findAndTranslateAll();
+            debounceTimer = null;
+        }, 500); // 500ms 防抖延迟
+    }
+
+    // 监听DOM变化，处理动态加载的内容（带防抖）
     const observer = new MutationObserver((mutations) => {
-        findAndTranslateAll();
+        // 过滤掉翻译按钮自身引起的DOM变化
+        const hasRelevantChanges = mutations.some(mutation => {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    // 忽略翻译相关的元素
+                    if (node.classList && (
+                        node.classList.contains('x-translator-box') ||
+                        node.classList.contains('x-translator-button')
+                    )) {
+                        continue;
+                    }
+                    return true;
+                }
+            }
+            return false;
+        });
+        
+        if (hasRelevantChanges) {
+            debouncedFindAndTranslateAll();
+        }
     });
 
     // 监听主题变化
@@ -575,9 +727,12 @@
     // 初始翻译
     findAndTranslateAll();
 
-    // 定期检查新内容（作为备用）
-    setInterval(findAndTranslateAll, 2000);
+    // 定期检查新内容（作为备用），间隔增加到5秒
+    setInterval(() => {
+        findAndTranslateAll();
+    }, 5000);
 
-    console.log('Twitter翻译脚本已加载，当前设置:', getSettings());
+    console.log('[翻译姬] 🚀 脚本已加载，当前设置:', getSettings());
+    console.log('[翻译姬] 💡 提示: 打开浏览器控制台 (F12) 查看详细翻译日志');
 
 })();
