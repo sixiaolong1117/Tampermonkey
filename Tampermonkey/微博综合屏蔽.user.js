@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.34
+// @version      0.35
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -448,6 +448,48 @@
                 background: #332701;
                 color: #f1c40f;
                 border-color: #665200;
+            }
+        }
+        .super-topic-context-menu {
+            position: fixed;
+            background: var(--ctx-bg, white);
+            border: 1px solid var(--ctx-border, #ccc);
+            border-radius: 6px;
+            padding: 4px 0;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+            z-index: 99999;
+            min-width: 200px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 13px;
+        }
+        .super-topic-context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            color: var(--ctx-text, #333);
+            white-space: nowrap;
+            transition: background 0.15s;
+        }
+        .super-topic-context-menu-item:hover {
+            background: var(--ctx-hover, #f0f0f0);
+        }
+        .super-topic-context-menu-item .highlight {
+            color: #f1403c;
+            font-weight: 600;
+        }
+        @media (prefers-color-scheme: light) {
+            .super-topic-context-menu {
+                --ctx-bg: #fff;
+                --ctx-text: #333;
+                --ctx-border: #ddd;
+                --ctx-hover: #f5f5f5;
+            }
+        }
+        @media (prefers-color-scheme: dark) {
+            .super-topic-context-menu {
+                --ctx-bg: #2d2d2d;
+                --ctx-text: #ccc;
+                --ctx-border: #444;
+                --ctx-hover: #3a3a3a;
             }
         }
     `;
@@ -1691,6 +1733,112 @@
             }
         }
     }
+
+    // =============== 通用右键菜单 START ===============
+
+    function showContextMenu(e, items) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        // 移除已有的右键菜单
+        document.querySelectorAll('.super-topic-context-menu').forEach(el => el.remove());
+
+        const menu = document.createElement('div');
+        menu.className = 'super-topic-context-menu';
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+
+        items.forEach(item => {
+            const el = document.createElement('div');
+            el.className = 'super-topic-context-menu-item';
+            if (item.html) {
+                el.innerHTML = item.html;
+            } else {
+                el.textContent = item.text;
+            }
+            if (item.color) el.style.color = item.color;
+            el.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                item.action();
+                menu.remove();
+            });
+            menu.appendChild(el);
+        });
+
+        // 添加"取消"分隔
+        const divider = document.createElement('div');
+        divider.style.cssText = 'height:1px;background:var(--ctx-border,#ddd);margin:4px 0;';
+        menu.appendChild(divider);
+        const cancelItem = document.createElement('div');
+        cancelItem.className = 'super-topic-context-menu-item';
+        cancelItem.textContent = '取消';
+        cancelItem.style.color = '#999';
+        cancelItem.addEventListener('click', () => menu.remove());
+        menu.appendChild(cancelItem);
+
+        document.body.appendChild(menu);
+
+        // 调整菜单位置，防止溢出屏幕
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            menu.style.left = (window.innerWidth - rect.width - 10) + 'px';
+        }
+        if (rect.bottom > window.innerHeight) {
+            menu.style.top = (window.innerHeight - rect.height - 10) + 'px';
+        }
+
+        // 点击其他区域关闭菜单
+        const closeHandler = (ev) => {
+            if (!menu.contains(ev.target)) {
+                menu.remove();
+                document.removeEventListener('click', closeHandler);
+                document.removeEventListener('contextmenu', closeHandler);
+            }
+        };
+        setTimeout(() => {
+            document.addEventListener('click', closeHandler);
+            document.addEventListener('contextmenu', closeHandler);
+        }, 0);
+    }
+
+    // 超话右键菜单
+    function showSuperTopicContextMenu(e, topicText) {
+        showContextMenu(e, [{
+            html: `添加到超话屏蔽列表：<span class="highlight">${topicText}</span>`,
+            action: () => {
+                if (!superTopicKeywords.includes(topicText)) {
+                    const newSuperTopicKeywords = [...superTopicKeywords, topicText];
+                    saveKeywordsAndSync(keywords, blockedIds, sourceKeywords, newSuperTopicKeywords, `右键屏蔽超话: ${topicText}`);
+                    showNotification(`✅ 已屏蔽超话: "${topicText}"`);
+                    hideContent();
+                    forceLayoutUpdate();
+                } else {
+                    showNotification(`ℹ️ 超话"${topicText}"已在屏蔽列表中`);
+                }
+            }
+        }]);
+    }
+
+    // 用户右键菜单
+    function showUserContextMenu(e, userId, userName) {
+        const displayName = userName || '未知用户';
+        showContextMenu(e, [{
+            html: `屏蔽用户：<span class="highlight">${displayName}</span>`,
+            action: () => {
+                if (!blockedIds.includes(userId)) {
+                    const newBlockedIds = [...blockedIds, userId];
+                    saveKeywordsAndSync(keywords, newBlockedIds, sourceKeywords, superTopicKeywords, `右键屏蔽用户: ${displayName}`);
+                    showNotification(`✅ 已屏蔽用户: "${displayName}"`);
+                    hideContent();
+                    forceLayoutUpdate();
+                } else {
+                    showNotification(`ℹ️ 用户"${displayName}"已在屏蔽列表中`);
+                }
+            }
+        }]);
+    }
+
+    // =============== 通用右键菜单 END ===============
 
     // 添加屏蔽按钮到用户名称旁
     function addBlockButtons() {
@@ -2967,6 +3115,60 @@
 
         // 添加键盘事件监听
         document.addEventListener('keydown', handleKeyPress);
+
+        // 右键菜单 - 通过事件委托监听超话和用户名
+        document.addEventListener('contextmenu', function (e) {
+            // === 超话右键 ===
+            const superLink = e.target.closest('a[class*="_superText_"]');
+            const chaohuaImg = e.target.closest('img[class*="_chaohuaIcon_"]');
+            if (superLink || chaohuaImg) {
+                const container = (superLink || chaohuaImg).closest(SELECTORS.feedBody) ||
+                                  (superLink || chaohuaImg).closest('._body_m3n8j_63');
+                if (container) {
+                    let topicText = '';
+                    const link = container.querySelector('a[class*="_superText_"]');
+                    if (link) {
+                        const span = link.querySelector('span');
+                        topicText = span?.getAttribute('title') || span?.textContent || link.textContent || '';
+                    }
+                    topicText = topicText.trim();
+                    if (topicText) {
+                        showSuperTopicContextMenu(e, topicText);
+                        return;
+                    }
+                }
+            }
+
+            // === 用户名右键 ===
+            const nameSpan = e.target.closest('span[usercard]');
+            const avatarMain = e.target.closest('.woo-avatar-main[usercard]');
+            if (!nameSpan && !avatarMain) return;
+
+            const container = (nameSpan || avatarMain).closest(SELECTORS.feedBody) ||
+                              (nameSpan || avatarMain).closest('._body_m3n8j_63');
+            if (!container) return;
+
+            // 从头像获取用户ID
+            const avatar = container.querySelector('.woo-avatar-main[usercard]');
+            if (!avatar) return;
+            const userId = avatar.getAttribute('usercard');
+            if (!userId) return;
+
+            // 获取用户名称
+            let userName = '未知用户';
+            const nameLink = findUserNameLink(container);
+            if (nameLink) {
+                const span = nameLink.querySelector('span');
+                userName = span?.getAttribute('title') || span?.textContent || userName;
+            }
+            if (userName === '未知用户') {
+                const avatarImg = container.querySelector('.woo-avatar-main img, .woo-avatar-img');
+                userName = avatarImg?.getAttribute('alt') || userName;
+            }
+
+            showUserContextMenu(e, userId, userName);
+        });
+
         window.addEventListener('scroll', () => {
             lastScrollTime = Date.now();
             scheduleAutoExpand();
