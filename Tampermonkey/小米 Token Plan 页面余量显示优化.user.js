@@ -14,7 +14,7 @@
 
     const TAG = '[Token余量优化]';
 
-    // 计费规则：每百万token的credits消耗率
+    // 计费规则：每个token的credits消耗率
     const BILLING_RULES = {
         'mimo-v2.5-pro': {
             input_cached: 2.5,
@@ -101,7 +101,7 @@
         injectDiv.innerHTML = `
             <div style="font-size: 14px; font-weight: 500; color: #1f2329; margin-bottom: 8px;">📊 余量计算</div>
             <div style="margin-top: 4px;">
-                <div style="font-size: 12px; color: #646a73; margin-bottom: 6px;">剩余 credits 可用 token 数量（credits ÷ 费率 × 1,000,000）</div>
+                <div style="font-size: 12px; color: #646a73; margin-bottom: 6px;">剩余 credits 可用 token 数量（credits ÷ 费率）</div>
                 <select id="mimo-model-select" style="width: 100%; padding: 6px 8px; border: 1px solid #e5e6ea; border-radius: 4px; font-size: 12px; color: #1f2329; background-color: #f6f6f8; margin-bottom: 6px;">
                     ${Object.keys(BILLING_RULES).map(model => `<option value="${model}">${model}</option>`).join('')}
                 </select>
@@ -126,17 +126,14 @@
             // 剩余 token = 剩余 credits / (credits / 百万token) * 1,000,000
             // 即 剩余 token = 剩余 credits * 1,000,000 / credits_per_million_tokens
             const tokensForInputCached = Math.floor(remaining * 1000000 / rules.input_cached);
-            const tokensForInputUncached = Math.floor(remaining * 1000000 / rules.input_uncached);
-            const tokensForOutput = Math.floor(remaining * 1000000 / rules.output);
 
             creditsInfo.innerHTML = `
-                <div style="margin-bottom: 2px;">输入（命中缓存，${rules.input_cached} credits/M）：<b>${formatNumber(tokensForInputCached)}</b> tokens</div>
-                <div style="margin-bottom: 2px;">输入（未命中缓存，${rules.input_uncached} credits/M）：<b>${formatNumber(tokensForInputUncached)}</b> tokens</div>
-                <div>输出（${rules.output} credits/M）：<b>${formatNumber(tokensForOutput)}</b> tokens</div>
+                <div style="margin-bottom: 2px;">输入（命中缓存，${rules.input_cached} credits/token）：<b>${formatNumber(tokensForInputCached)}</b> tokens</div>
+                <div style="margin-bottom: 2px;">输入（未命中缓存，${rules.input_uncached} credits/token）：<b>${formatNumber(tokensForInputUncached)}</b> tokens</div>
+                <div>输出（${rules.output} credits/token）：<b>${formatNumber(tokensForOutput)}</b> tokens</div>
             `;
         }
 
-        updateCreditsInfo();
         injectDiv.querySelector('#mimo-model-select').addEventListener('change', updateCreditsInfo);
     }
 

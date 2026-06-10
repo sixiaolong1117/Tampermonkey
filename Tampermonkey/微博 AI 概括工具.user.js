@@ -971,19 +971,19 @@
 
         // ============ 微博相关方法 ============
 
-        // Feed 项选择器（与微博综合屏蔽脚本保持一致）
+        // Feed 项选择器（与微博综合屏蔽脚本保持一致，兼容新旧版本）
         static get SELECTORS() {
             return {
-                feedBody: '._body_m3n8j_63',
+                feedBody: '._body_m3n8j_63, ._body_ecgcn_63',
                 feedContent: '.wbpro-feed-content',
-                feedText: '._wbtext_1psp9_14',
-                feedTextContainer: '._text_1psp9_2',
+                feedText: '._wbtext_1psp9_14, ._wbtext_1h76l_19',
+                feedTextContainer: '._text_1psp9_2, ._text_1h76l_2',
                 userLink: 'a[href*="/u/"]',
-                userName: '._link_1b05f_126',
-                userNameAlt: '._name_1b05f_122',
-                nickContainer: '._nick_1b05f_25',
+                userName: '._link_1b05f_126, ._name_ygi5b_120',
+                userNameAlt: '._name_1b05f_122, ._name_ygi5b_120',
+                nickContainer: '._nick_1b05f_25, ._nick_ygi5b_25',
                 suffixBox: '._suffixbox_1b05f_33',
-                iconsPlus: '._iconsPlus_1b05f_75',
+                iconsPlus: '._iconsPlus_1b05f_75, ._iconsPlus_ygi5b_75',
                 timeLink: 'a[class*="_time_1tpft_33"]',
             };
         }
@@ -1276,7 +1276,7 @@
     // 初始化
     let initialized = false;
     function init() {
-        if (!initialized && document.querySelector('._body_m3n8j_63')) {
+        if (!initialized && (document.querySelector('._body_m3n8j_63') || document.querySelector('._body_ecgcn_63'))) {
             initialized = true;
             new OllamaSummarizer();
         }

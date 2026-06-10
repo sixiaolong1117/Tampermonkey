@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.35
+// @version      0.36
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -75,22 +75,22 @@
 
     const SELECTORS = {
         // 微博主体
-        feedBody: '._body_m3n8j_63',
+        feedBody: '[class*="_body_"]',
         feedItem: '.wbpro-scroller-item',
 
         // 用户信息相关
         avatar: '.woo-avatar-main[usercard]',
         userLink: 'a[href*="/u/"]',
-        userName: '._link_1b05f_126',
-        userNameAlt: '._name_1b05f_122',
-        nickContainer: '._nick_1b05f_25',
-        suffixBox: '._suffixbox_1b05f_33',
-        iconsPlus: '._iconsPlus_1b05f_75',
+        userName: '._name_ygi5b_120',
+        userNameAlt: '._name_ygi5b_120',
+        nickContainer: '._nick_ygi5b_25',
+        suffixBox: '[class*="_suffixbox_"]',
+        iconsPlus: '._iconsPlus_ygi5b_75',
 
         // 微博内容
         feedContent: '.wbpro-feed-content',
-        feedText: '._wbtext_1psp9_14',
-        feedTextContainer: '._text_1psp9_2',
+        feedText: '._wbtext_1h76l_19',
+        feedTextContainer: '._text_1h76l_2',
 
         // 时间和来源
         timeLink: 'a[class*="_time_1tpft_33"]',
@@ -109,8 +109,8 @@
         feedListTop: '[node-type="feed_list_top"]',
 
         // 超话相关
-        chaohuaIcon: '._chaohuaIcon_1b05f_166',
-        superText: '._superText_1b05f_133',
+        chaohuaIcon: '[class*="_chaohuaIcon_"]',
+        superText: '[class*="_superText_"]',
 
         // 面板
         panelMain: '.woo-panel-main',
@@ -287,7 +287,7 @@
             padding: 1px 6px;
             margin-left: 5px;
         }
-        ._name_18nz8_120 {
+        ._name_ygi5b_120 {
             display: flex;
             align-items: center;
             gap: 5px;
@@ -2365,7 +2365,7 @@
 
         feedBodies.forEach(feedBody => {
             // 只处理有超话标签的微博
-            const chaohuaIcon = feedBody.querySelector('img[class*="chaohua"], img[class*="Chaohua"], ._chaohuaIcon_1b05f_166');
+            const chaohuaIcon = feedBody.querySelector('img[class*="chaohua"], img[class*="Chaohua"]');
             const superTextLink = feedBody.querySelector('a[class*="superText"], a[class*="_superText_"]');
             if (!chaohuaIcon && !superTextLink) return;
 
@@ -3123,7 +3123,7 @@
             const chaohuaImg = e.target.closest('img[class*="_chaohuaIcon_"]');
             if (superLink || chaohuaImg) {
                 const container = (superLink || chaohuaImg).closest(SELECTORS.feedBody) ||
-                                  (superLink || chaohuaImg).closest('._body_m3n8j_63');
+                                  (superLink || chaohuaImg).closest('[class*="_body_"]');
                 if (container) {
                     let topicText = '';
                     const link = container.querySelector('a[class*="_superText_"]');
@@ -3145,7 +3145,7 @@
             if (!nameSpan && !avatarMain) return;
 
             const container = (nameSpan || avatarMain).closest(SELECTORS.feedBody) ||
-                              (nameSpan || avatarMain).closest('._body_m3n8j_63');
+                              (nameSpan || avatarMain).closest('[class*="_body_"]');
             if (!container) return;
 
             // 从头像获取用户ID
@@ -3207,7 +3207,7 @@
 
                         // 精确匹配微博内容节点
                         if (node.classList) {
-                            if (node.classList.contains('_body_m3n8j_63') ||
+                            if ([...node.classList].some(cls => cls.startsWith('_body_')) ||
                                 node.classList.contains('wbpro-scroller-item') ||
                                 node.classList.contains('vue-recycle-scroller__item-view')) {
                                 needsProcessing = true;
