@@ -194,12 +194,17 @@
     }
 
     let _blockingRecommend = false;  // 重入保护
+    let _lastRKeyTime = 0;           // 上次按 R 键的时间戳
+    let _pendingBlockTimer = null;   // 待处理的延迟屏蔽定时器
 
     // 推荐页面：对活跃视频触发"不感兴趣"（模拟按 R 键）
     function markRecommendAsNotInterested(videoElement, reason = '') {
-        if (videoElement.getAttribute('data-blocked')) return;
-
+        const alreadyBlocked = videoElement.getAttribute('data-blocked');
         const { title, author, videoId } = getRecommendVideoInfo(videoElement);
+
+        // 如果已有延迟定时器在排队，且该视频已标记过，不再重复排队
+        if (_pendingBlockTimer && alreadyBlocked) return;
+
         console.log(
             `%c[抖音屏蔽] 推荐页不感兴趣 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)} | 原因: ${reason}`,
             'color: #ff6b6b; font-weight: bold;'
@@ -208,15 +213,29 @@
         // 标记已处理
         videoElement.setAttribute('data-blocked', 'true');
 
-        // 触发抖音原生"不感兴趣"机制（模拟按 R 键）
-        // 抖音在 document 上监听 keydown，key='r' 触发不感兴趣
+        // 节流：确保两次 R 键之间至少间隔 800ms（抖音 swiper 切换需要时间）
+        const now = Date.now();
+        const timeSinceLastR = now - _lastRKeyTime;
+        if (timeSinceLastR < 800) {
+            const delay = 800 - timeSinceLastR;
+            if (_pendingBlockTimer) clearTimeout(_pendingBlockTimer);
+            _pendingBlockTimer = setTimeout(() => {
+                _lastRKeyTime = Date.now();
+                const event = new KeyboardEvent('keydown', {
+                    key: 'r', keyCode: 82, which: 82, code: 'KeyR',
+                    bubbles: true, cancelable: true
+                });
+                document.dispatchEvent(event);
+                _pendingBlockTimer = null;
+            }, delay);
+            return;
+        }
+
+        // 正常触发
+        _lastRKeyTime = now;
         const event = new KeyboardEvent('keydown', {
-            key: 'r',
-            keyCode: 82,
-            which: 82,
-            code: 'KeyR',
-            bubbles: true,
-            cancelable: true
+            key: 'r', keyCode: 82, which: 82, code: 'KeyR',
+            bubbles: true, cancelable: true
         });
         document.dispatchEvent(event);
     }
@@ -230,9 +249,21 @@
             const slides = document.querySelectorAll('.sliderVideo');
             const blockAllLive = getBlockAllLive();
 
-            // 只处理活跃 slide：触发不感兴趣后抖音会自动移除并切到下一个
+            // 只处理活跃 slide
             const activeSlide = document.querySelector('[data-e2e="feed-active-video"]');
-            if (!activeSlide || activeSlide.getAttribute('data-blocked')) return;
+            if (!activeSlide) return;
+
+            // 即使已被标记 data-blocked 也要处理（预屏蔽的 slide 变为活跃时需跳过）
+            if (activeSlide.getAttribute('data-blocked')) {
+                // 已被预屏蔽 → 直接按 R 跳过
+                const { title, author, videoId } = getRecommendVideoInfo(activeSlide);
+                console.log(
+                    `%c[抖音屏蔽] 跳过已屏蔽视频（活跃） | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)}`,
+                    'color: #ff6b6b; font-weight: bold;'
+                );
+                markRecommendAsNotInterested(activeSlide, '预屏蔽（活跃）');
+                return;
+            }
 
             if (isRecommendAdElement(activeSlide)) {
                 markRecommendAsNotInterested(activeSlide, '广告');
@@ -537,19 +568,79 @@
     function attachContextMenu() {
         const pageType = getPageType();
         if (pageType === 'unknown') return;
-        const containerSelector = pageType === 'recommend' ? '.sliderVideo' : '.discover-video-card-item';
 
         document.addEventListener('contextmenu', (e) => {
-            const videoElement = e.target.closest(containerSelector);
-            if (videoElement) {
-                if (pageType === 'recommend') {
+            if (pageType === 'recommend') {
+                // 推荐页：优先检测是否右键在作者名上
+                const authorEl = e.target.closest('[data-e2e="feed-video-nickname"], .account-name');
+                if (authorEl) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const videoElement = authorEl.closest('.sliderVideo');
+                    if (!videoElement || videoElement.getAttribute('data-blocked')) return;
+
+                    const author = authorEl.textContent.trim().replace(/^@/, '');
+                    if (!author) return;
+
+                    const existingMenu = document.getElementById('douyin-block-menu');
+                    if (existingMenu) existingMenu.remove();
+
+                    const menu = document.createElement('div');
+                    menu.id = 'douyin-block-menu';
+                    menu.style.cssText = `
+                        position: fixed;
+                        left: ${e.clientX}px;
+                        top: ${e.clientY}px;
+                        background: white;
+                        border: 1px solid #ccc;
+                        border-radius: 4px;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                        z-index: 999999;
+                        min-width: 160px;
+                        font-size: 14px;
+                    `;
+
+                    const menuItem = document.createElement('div');
+                    menuItem.textContent = `屏蔽作者: ${author}`;
+                    menuItem.style.cssText = `
+                        padding: 8px 16px;
+                        cursor: pointer;
+                        transition: background 0.2s;
+                    `;
+                    menuItem.onmouseover = () => menuItem.style.background = '#f0f0f0';
+                    menuItem.onmouseout = () => menuItem.style.background = 'white';
+                    menuItem.onclick = () => {
+                        addToBlockList(CONFIG_KEYS.AUTHORS, author);
+                        scanAndBlockVideos();
+                        showNotification(`已屏蔽作者: ${author}`);
+                        menu.remove();
+                    };
+                    menu.appendChild(menuItem);
+                    document.body.appendChild(menu);
+
+                    setTimeout(() => {
+                        document.addEventListener('click', function closeMenu() {
+                            menu.remove();
+                            document.removeEventListener('click', closeMenu);
+                        });
+                    }, 100);
+                    return;
+                }
+
+                // 推荐页：右键视频卡片 → 完整菜单
+                const videoElement = e.target.closest('.sliderVideo');
+                if (videoElement) {
                     if (isRecommendAdElement(videoElement)) return;
-                    // 在推荐页面上，右键菜单使用推荐页面的数据
                     const { title, author } = getRecommendVideoInfo(videoElement);
                     const videoId = extractVideoIdFromClass(videoElement);
                     const isLive = isRecommendLiveElement(videoElement);
                     createRecommendContextMenu(videoElement, e, { title, author, videoId, isLive });
-                } else {
+                }
+            } else {
+                // 精选页
+                const videoElement = e.target.closest('.discover-video-card-item');
+                if (videoElement) {
                     if (isAdElement(videoElement)) return;
                     createContextMenu(videoElement, e);
                 }
