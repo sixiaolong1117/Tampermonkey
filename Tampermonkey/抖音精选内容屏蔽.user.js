@@ -1,10 +1,10 @@
 // ==UserScript==
-// @name         抖音精选内容屏蔽
+// @name         抖音内容屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.1
-// @description  屏蔽抖音精选页面的视频内容，支持关键词、作者、视频ID屏蔽
+// @version      26.6.14
+// @description  屏蔽抖音精选页面和推荐页面的视频内容，支持关键词、作者、视频ID屏蔽
 // @author       SI Xiaolong
-// @match        https://www.douyin.com/jingxuan*
+// @match        https://www.douyin.com/*
 // @icon         https://www.douyin.com/favicon.ico
 // @grant        GM_registerMenuCommand
 // @grant        GM_getValue
@@ -118,26 +118,196 @@
         saveBlockList(key, list);
     }
 
+    // ====== 页面类型检测 ======
+    function getPageType() {
+        const url = window.location.href;
+        if (url.includes('/jingxuan')) return 'jingxuan';
+        if (url.includes('?recommend=') || url === 'https://www.douyin.com/' || url === 'https://www.douyin.com') return 'recommend';
+        return 'unknown';
+    }
+
+    // ====== 推荐页面专用函数 ======
+
+    // 从 sliderVideo 的 class 中提取 video ID
+    function extractVideoIdFromClass(videoElement) {
+        const classes = videoElement.className.split(' ');
+        for (const cls of classes) {
+            if (cls.startsWith('video_')) {
+                return cls.replace('video_', '');
+            }
+        }
+        return null;
+    }
+
+    // 推荐页面：获取视频信息
+    function getRecommendVideoInfo(videoElement) {
+        const titleEl = videoElement.querySelector('[data-e2e="video-desc"]');
+        const authorEl = videoElement.querySelector('[data-e2e="feed-video-nickname"]');
+        const videoId = extractVideoIdFromClass(videoElement);
+
+        const title = titleEl ? titleEl.textContent.trim() : '';
+        const author = authorEl ? authorEl.textContent.trim().replace(/^@/, '') : '';
+
+        return { title, author, videoId };
+    }
+
+    // 推荐页面：检查是否为直播
+    function isRecommendLiveElement(videoElement) {
+        // 直播标签出现在视频播放器容器上（典型的直播容器有特殊类名）
+        if (videoElement.querySelector('.n_CDmYLU, .LivePlayer_PreCreatePlayer')) return true;
+        // 检查视频信息区域是否包含直播标识
+        const infoEl = videoElement.querySelector('[data-e2e="video-info"]');
+        if (infoEl && (infoEl.textContent.includes('正在直播') || infoEl.textContent.includes('直播中'))) return true;
+        return false;
+    }
+
+    // 推荐页面：检查是否为广告
+    function isRecommendAdElement(videoElement) {
+        const videoId = extractVideoIdFromClass(videoElement);
+        if (!videoId) return true;
+        const text = videoElement.textContent;
+        if (text.includes('广告') || text.includes('推广') || text.includes('AD') || text.includes('ad')) {
+            const { title } = getRecommendVideoInfo(videoElement);
+            if (!title) return true;
+        }
+        return false;
+    }
+
+    // 推荐页面：检查是否应屏蔽
+    function shouldBlockRecommendVideo(videoElement) {
+        const { title, author, videoId } = getRecommendVideoInfo(videoElement);
+        if (!title) return false;
+
+        const blockAllLive = getBlockAllLive();
+        if (blockAllLive && isRecommendLiveElement(videoElement)) return true;
+
+        const blockedIds = getBlockList(CONFIG_KEYS.VIDEO_IDS);
+        if (videoId && blockedIds.includes(videoId)) return true;
+
+        const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
+        if (author && blockedAuthors.some(blocked => matchText(author, blocked))) return true;
+
+        const blockedKeywords = getBlockList(CONFIG_KEYS.KEYWORDS);
+        if (blockedKeywords.some(keyword => matchText(title, keyword))) return true;
+
+        return false;
+    }
+
+    let _blockingRecommend = false;  // 重入保护
+
+    // 推荐页面：对活跃视频触发"不感兴趣"（模拟按 R 键）
+    function markRecommendAsNotInterested(videoElement, reason = '') {
+        if (videoElement.getAttribute('data-blocked')) return;
+
+        const { title, author, videoId } = getRecommendVideoInfo(videoElement);
+        console.log(
+            `%c[抖音屏蔽] 推荐页不感兴趣 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)} | 原因: ${reason}`,
+            'color: #ff6b6b; font-weight: bold;'
+        );
+
+        // 标记已处理
+        videoElement.setAttribute('data-blocked', 'true');
+
+        // 触发抖音原生"不感兴趣"机制（模拟按 R 键）
+        // 抖音在 document 上监听 keydown，key='r' 触发不感兴趣
+        const event = new KeyboardEvent('keydown', {
+            key: 'r',
+            keyCode: 82,
+            which: 82,
+            code: 'KeyR',
+            bubbles: true,
+            cancelable: true
+        });
+        document.dispatchEvent(event);
+    }
+
+    // 推荐页面：扫描并屏蔽
+    function scanRecommendPage() {
+        if (_blockingRecommend) return;
+        _blockingRecommend = true;
+
+        try {
+            const slides = document.querySelectorAll('.sliderVideo');
+            const blockAllLive = getBlockAllLive();
+
+            // 只处理活跃 slide：触发不感兴趣后抖音会自动移除并切到下一个
+            const activeSlide = document.querySelector('[data-e2e="feed-active-video"]');
+            if (!activeSlide || activeSlide.getAttribute('data-blocked')) return;
+
+            if (isRecommendAdElement(activeSlide)) {
+                markRecommendAsNotInterested(activeSlide, '广告');
+            } else if (blockAllLive && isRecommendLiveElement(activeSlide)) {
+                markRecommendAsNotInterested(activeSlide, '屏蔽所有直播');
+            } else if (shouldBlockRecommendVideo(activeSlide)) {
+                const { title, author, videoId } = getRecommendVideoInfo(activeSlide);
+                const blockedIds = getBlockList(CONFIG_KEYS.VIDEO_IDS);
+                const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
+                const blockedKeywords = getBlockList(CONFIG_KEYS.KEYWORDS);
+                let reason = '匹配规则';
+                if (videoId && blockedIds.includes(videoId)) reason = '视频ID黑名单';
+                else if (author && blockedAuthors.some(b => matchText(author, b))) reason = '作者黑名单';
+                else if (blockedKeywords.some(k => matchText(title, k))) reason = '标题关键词黑名单';
+                markRecommendAsNotInterested(activeSlide, reason);
+            }
+        } finally {
+            _blockingRecommend = false;
+        }
+    }
+
+    // ====== 通用（精选页面）函数 ======
+
     // 检查是否为直播元素
     function isLiveElement(videoElement) {
-        // 直播元素特征：包含"直播中"标识
-        const liveIndicator = videoElement.querySelector('.czPHNW9v[data-e2e="user-info-living"]');
-        const liveClass = videoElement.querySelector('.ZSMMXimI');
-        return liveIndicator !== null || liveClass !== null;
+        // 直播元素特征：包含"正在直播"标识
+        const liveIndicator = videoElement.querySelector('.itnjms9W');
+        if (liveIndicator) return true;
+        const allElements = videoElement.querySelectorAll('*');
+        for (const el of allElements) {
+            if (el.children.length === 0 && el.textContent.trim() === '正在直播') {
+                return true;
+            }
+        }
+        return false;
     }
 
     // 获取视频/直播的标题和作者
     function getVideoInfo(videoElement) {
-        // 尝试获取普通视频的信息
-        let titleElement = videoElement.querySelector('.bWzvoR9D');
-        let authorElement = videoElement.querySelector('.i1udsuGn');
+        let titleElement = videoElement.querySelector('.z72L2AHI');
+        let authorElement = videoElement.querySelector('.tD3Pzgfx');
 
-        // 如果是直播，使用直播的选择器
+        // 后备策略：在卡片的信息区域中寻找标题和作者
         if (!titleElement) {
-            titleElement = videoElement.querySelector('.Tu5IS0vC');
+            // 尝试在 img[alt] 中获取标题
+            const img = videoElement.querySelector('img[class*="discover-video-card-img"]');
+            if (img && img.alt) {
+                titleElement = { textContent: img.alt };
+            } else {
+                // 最后后备：查找文本内容最长的独立 div
+                let maxLen = 0;
+                videoElement.querySelectorAll('div').forEach(el => {
+                    if (el.children.length === 0) {
+                        const text = el.textContent.trim();
+                        if (text.length > maxLen && !text.includes('·') && text.length > 5) {
+                            maxLen = text.length;
+                            titleElement = el;
+                        }
+                    }
+                });
+            }
         }
+
         if (!authorElement) {
-            authorElement = videoElement.querySelector('.TvB65_nE');
+            // 在后备中查找作者：寻找包含但不仅限于 @ 的短文本
+            videoElement.querySelectorAll('span').forEach(el => {
+                const text = el.textContent.trim();
+                // 作者名通常是不包含特殊字符（除@外）且长度适中的文本
+                if (text.length > 0 && text.length < 30 && !text.includes('·') && !text.includes('/') && !text.includes(':')) {
+                    // 排除纯数字（播放量）、时间格式
+                    if (!/^[\d.万亿]+$/.test(text) && !/^\d+:\d+$/.test(text)) {
+                        authorElement = el;
+                    }
+                }
+            });
         }
 
         const title = titleElement ? titleElement.textContent.trim() : '';
@@ -253,13 +423,9 @@
     // 检查视频是否应该被屏蔽
     function shouldBlockVideo(videoElement) {
         const videoId = videoElement.getAttribute('data-aweme-id');
-        const titleElement = videoElement.querySelector('.bWzvoR9D');
-        const authorElement = videoElement.querySelector('.i1udsuGn');
+        const { title, author } = getVideoInfo(videoElement);
 
-        if (!titleElement) return false;
-
-        const title = titleElement.textContent.trim();
-        const author = authorElement ? authorElement.textContent.trim() : '';
+        if (!title) return false;
 
         // 检查视频ID
         const blockedIds = getBlockList(CONFIG_KEYS.VIDEO_IDS);
@@ -283,40 +449,84 @@
     }
 
     // 隐藏视频元素
-    function hideVideo(videoElement) {
+    function hideVideo(videoElement, reason = '') {
+        const videoId = videoElement.getAttribute('data-aweme-id');
+        const { title, author } = getVideoInfo(videoElement);
+        console.log(
+            `%c[抖音屏蔽] 已屏蔽精选页视频 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)} | 原因: ${reason}`,
+            'color: #ff6b6b; font-weight: bold;'
+        );
+        // 停止可能正在播放的媒体
+        videoElement.querySelectorAll('video, audio').forEach(media => {
+            media.pause();
+            media.removeAttribute('src');
+            media.load();
+        });
         videoElement.style.display = 'none';
         videoElement.setAttribute('data-blocked', 'true');
     }
 
     // 显示视频元素
     function showVideo(videoElement) {
+        const videoId = videoElement.getAttribute('data-aweme-id');
+        const { title, author } = getVideoInfo(videoElement);
+        console.log(
+            `%c[抖音屏蔽] 已取消屏蔽精选页视频 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)}`,
+            'color: #52c41a; font-weight: bold;'
+        );
         videoElement.style.display = '';
         videoElement.removeAttribute('data-blocked');
     }
 
     // 检查是否为广告元素
     function isAdElement(videoElement) {
-        // 广告元素特征：没有 data-aweme-id 属性或为空，且包含特定广告类名
+        // 广告元素特征：没有 data-aweme-id 属性或为空
         const awemeId = videoElement.getAttribute('data-aweme-id');
-        const hasAdClass = videoElement.classList.contains('auIPeWle') ||
-                          videoElement.querySelector('.auIPeWle') !== null;
+        if (!awemeId || awemeId === '') return true;
 
-        return (!awemeId || awemeId === '') && hasAdClass;
+        // 检查元素内是否包含广告/推广等文字
+        const text = videoElement.textContent;
+        if (text.includes('广告') || text.includes('推广') || text.includes('AD') || text.includes('ad')) {
+            // 通过 getVideoInfo 验证是否有正常的视频内容结构
+            const { title } = getVideoInfo(videoElement);
+            if (!title) return true;
+        }
+
+        return false;
     }
 
-    // 扫描并屏蔽视频
+    // 扫描并屏蔽视频（自动检测页面类型）
     function scanAndBlockVideos() {
-        const videos = document.querySelectorAll('.Xyhun5Yc.discover-video-card-item');
+        const pageType = getPageType();
+        if (pageType === 'unknown') return;
+        if (pageType === 'recommend') {
+            scanRecommendPage();
+            return;
+        }
+
+        // jingxuan 页面逻辑
+        const videos = document.querySelectorAll('.discover-video-card-item');
+        const blockAllLive = getBlockAllLive();
         videos.forEach(video => {
-            // 先检查是否为广告
             if (isAdElement(video)) {
-                hideVideo(video);
+                hideVideo(video, '广告');
                 return;
             }
-
-            // 再检查是否符合屏蔽规则
+            if (blockAllLive && isLiveElement(video)) {
+                hideVideo(video, '屏蔽所有直播');
+                return;
+            }
             if (shouldBlockVideo(video)) {
-                hideVideo(video);
+                const videoId = video.getAttribute('data-aweme-id');
+                const { title, author } = getVideoInfo(video);
+                const blockedIds = getBlockList(CONFIG_KEYS.VIDEO_IDS);
+                const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
+                const blockedKeywords = getBlockList(CONFIG_KEYS.KEYWORDS);
+                let reason = '匹配规则';
+                if (videoId && blockedIds.includes(videoId)) reason = '视频ID黑名单';
+                else if (author && blockedAuthors.some(b => matchText(author, b))) reason = '作者黑名单';
+                else if (blockedKeywords.some(k => matchText(title, k))) reason = '标题关键词黑名单';
+                hideVideo(video, reason);
             } else if (video.getAttribute('data-blocked')) {
                 showVideo(video);
             }
@@ -325,16 +535,106 @@
 
     // 监听右键点击
     function attachContextMenu() {
+        const pageType = getPageType();
+        if (pageType === 'unknown') return;
+        const containerSelector = pageType === 'recommend' ? '.sliderVideo' : '.discover-video-card-item';
+
         document.addEventListener('contextmenu', (e) => {
-            const videoElement = e.target.closest('.Xyhun5Yc.discover-video-card-item');
+            const videoElement = e.target.closest(containerSelector);
             if (videoElement) {
-                // 检查是否为广告元素，广告不显示菜单
-                if (isAdElement(videoElement)) {
-                    return;
+                if (pageType === 'recommend') {
+                    if (isRecommendAdElement(videoElement)) return;
+                    // 在推荐页面上，右键菜单使用推荐页面的数据
+                    const { title, author } = getRecommendVideoInfo(videoElement);
+                    const videoId = extractVideoIdFromClass(videoElement);
+                    const isLive = isRecommendLiveElement(videoElement);
+                    createRecommendContextMenu(videoElement, e, { title, author, videoId, isLive });
+                } else {
+                    if (isAdElement(videoElement)) return;
+                    createContextMenu(videoElement, e);
                 }
-                createContextMenu(videoElement, e);
             }
         }, true);
+    }
+
+    // 推荐页面专用右键菜单
+    function createRecommendContextMenu(videoElement, e, info) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        const existingMenu = document.getElementById('douyin-block-menu');
+        if (existingMenu) existingMenu.remove();
+
+        const { title, author, videoId, isLive } = info;
+
+        const menu = document.createElement('div');
+        menu.id = 'douyin-block-menu';
+        menu.style.cssText = `
+            position: fixed;
+            left: ${e.clientX}px;
+            top: ${e.clientY}px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            z-index: 999999;
+            min-width: 180px;
+            font-size: 14px;
+        `;
+
+        const menuItems = [
+            { text: `屏蔽标题关键词`, action: () => {
+                const keyword = prompt('请输入要屏蔽的关键词（从标题中提取）:', title.substring(0, 20));
+                if (keyword) {
+                    addToBlockList(CONFIG_KEYS.KEYWORDS, keyword);
+                    scanAndBlockVideos();
+                    showNotification(`已屏蔽关键词: ${keyword}`);
+                }
+            }, disabled: !title},
+            { text: `屏蔽作者: ${author}`, action: () => {
+                if (author) {
+                    addToBlockList(CONFIG_KEYS.AUTHORS, author);
+                    scanAndBlockVideos();
+                    showNotification(`已屏蔽作者: ${author}`);
+                }
+            }, disabled: !author},
+            { text: `屏蔽此${isLive ? '直播' : '视频'}ID`, action: () => {
+                if (videoId) {
+                    addToBlockList(CONFIG_KEYS.VIDEO_IDS, videoId);
+                    scanAndBlockVideos();
+                    showNotification(`已屏蔽${isLive ? '直播' : '视频'}ID: ${videoId}`);
+                }
+            }, disabled: !videoId}
+        ];
+
+        menuItems.forEach(item => {
+            const menuItem = document.createElement('div');
+            menuItem.textContent = item.text;
+            menuItem.style.cssText = `
+                padding: 8px 16px;
+                cursor: ${item.disabled ? 'not-allowed' : 'pointer'};
+                opacity: ${item.disabled ? '0.5' : '1'};
+                transition: background 0.2s;
+            `;
+            if (!item.disabled) {
+                menuItem.onmouseover = () => menuItem.style.background = '#f0f0f0';
+                menuItem.onmouseout = () => menuItem.style.background = 'white';
+                menuItem.onclick = () => {
+                    item.action();
+                    menu.remove();
+                };
+            }
+            menu.appendChild(menuItem);
+        });
+
+        document.body.appendChild(menu);
+
+        setTimeout(() => {
+            document.addEventListener('click', function closeMenu() {
+                menu.remove();
+                document.removeEventListener('click', closeMenu);
+            });
+        }, 100);
     }
 
     // 管理屏蔽列表的界面
@@ -508,33 +808,73 @@
 
     // 初始化
     function init() {
-        console.log('抖音精选内容屏蔽脚本正在启动...');
+        const pageType = getPageType();
+        console.log(`抖音内容屏蔽脚本正在启动... 页面类型: ${pageType}`);
 
-        // 先绑定右键菜单
         attachContextMenu();
-        console.log('右键菜单已绑定');
 
-        // 初始扫描
-        scanAndBlockVideos();
-        console.log('初始扫描完成');
-
-        // 监听DOM变化
-        const observer = new MutationObserver(() => {
+        // 延迟初始扫描，等待页面完全渲染
+        setTimeout(() => {
             scanAndBlockVideos();
-        });
+            console.log('初始扫描完成');
+        }, 1500);
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        if (pageType === 'recommend') {
+            // 推荐页：监听 data-e2e 属性变化（slide 切换）
+            // 抖音使用虚拟滚动，新 slide 变为活跃时 data-e2e 从 feed-video 变为 feed-active-video
+            const waitForSlideList = setInterval(() => {
+                const target = document.querySelector('#slidelist') ||
+                               document.querySelector('.recommend-slidelist') ||
+                               document.querySelector('[data-e2e="slideList"]');
+                if (target) {
+                    clearInterval(waitForSlideList);
+                    console.log('推荐页容器已找到，开始监听');
 
-        console.log('抖音精选内容屏蔽脚本已启动');
+                    const observer = new MutationObserver(() => {
+                        scanAndBlockVideos();
+                    });
+                    observer.observe(target, {
+                        childList: true,
+                        subtree: true,
+                        attributes: true,
+                        attributeFilter: ['data-e2e']
+                    });
+
+                    // 兜底：每 3 秒扫描一次
+                    setInterval(() => {
+                        scanAndBlockVideos();
+                    }, 3000);
+                }
+            }, 500);
+        } else if (pageType === 'jingxuan') {
+            const observer = new MutationObserver(() => {
+                scanAndBlockVideos();
+            });
+            observer.observe(document.body, { childList: true, subtree: true });
+            console.log('精选页监听已启动');
+        }
+
+        console.log('抖音内容屏蔽脚本已启动');
     }
 
-    // 等待页面加载完成
+    // 尽快初始化
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
         init();
     }
+
+    // SPA 路由变化检测：抖音使用客户端路由，URL 变化时重新扫描
+    let lastUrl = window.location.href;
+    setInterval(() => {
+        const currentUrl = window.location.href;
+        if (currentUrl !== lastUrl) {
+            lastUrl = currentUrl;
+            console.log('URL 变化，重新执行屏蔽扫描:', currentUrl);
+            // 延迟执行，等待新页面 DOM 渲染
+            setTimeout(() => {
+                scanAndBlockVideos();
+            }, 1000);
+        }
+    }, 2000);
 })();
