@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.16
+// @version      0.17
 // @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
@@ -47,9 +47,6 @@
         virtualItem: '.TopstoryItem, .List-item, .SearchResult-Card',
         dateCreated: 'meta[itemprop="dateCreated"]'
     };
-
-    // 提取 @version
-    const SCRIPT_VERSION = GM_info.script.version || 'unknown';
 
     // 初始化关键词列表
     let keywords = GM_getValue(STORAGE_PREFIX + 'keywords', DEFAULT_KEYWORDS);
@@ -436,78 +433,20 @@
         document.body.appendChild(configModal);
     }
 
-    // WebDAV同步函数
-    function syncToWebDAV(reason = '手动同步') {
-        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
-            console.log('❌ 请先在脚本设置中配置 WebDAV 信息！');
-            return Promise.resolve(false);
-        }
-
-        const { folder, file } = getWebDAVUrls();
-
-        return new Promise(resolve => {
-            // 确保目录
-            webdavRequest({ method: 'PROPFIND', url: folder }, res => {
-                if (res.status === 404) {
-                    webdavRequest({ method: 'MKCOL', url: folder }, () => proceed());
-                } else {
-                    proceed();
-                }
-            });
-
-            function proceed() {
-                // 读取远端
-                webdavRequest({ method: 'GET', url: file }, res => {
-                    let remote = {};
-                    if (res.status === 200) {
-                        try { remote = JSON.parse(res.responseText) || {}; } catch { }
-                    }
-
-                    // 合并 + 上传
-                    const data = createConfigObject(remote, reason);
-                    webdavRequest({
-                        method: 'PUT',
-                        url: file,
-                        data: JSON.stringify(data, null, 2),
-                        headers: {
-                            'Content-Type': 'application/json; charset=utf-8',
-                            auth: getWebDAVUrls().auth
-                        }
-                    }, putRes => {
-                        if (putRes.status >= 200 && putRes.status < 300) {
-                            updateLastSync(data.lastModified);
-                            console.log('✅ WebDAV 增量同步成功');
-                            resolve(true);
-                        } else {
-                            console.log('❌ 上传失败:', putRes.status);
-                            resolve(false);
-                        }
-                    });
-                });
-            }
-        });
-    }
-
-    // 版本比较函数
-    function compareVersion(a, b) {
-        const pa = a.split('.').map(Number);
-        const pb = b.split('.').map(Number);
-        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-            const na = pa[i] || 0, nb = pb[i] || 0;
-            if (na > nb) return 1;
-            if (na < nb) return -1;
-        }
-        return 0;
-    }
+// WebDAV 文件定义：每个配置类别独立文件，互不干扰
+    const WEBDAV_FILES = {
+        keywords: 'zhihu_keywords.json',
+        blockedUsers: 'zhihu_blocked_users.json',
+        settings: 'zhihu_settings.json'
+    };
 
     // WebDAV URL 构建
     function getWebDAVUrls() {
         let base = webdavConfig.url;
         if (!base.endsWith('/')) base += '/';
         const folder = base + 'ZhihuGeneralBlock/';
-        const file = folder + 'zhihu_blocklist.json';
         const auth = 'Basic ' + btoa(webdavConfig.username + ':' + webdavConfig.password);
-        return { base, folder, file, auth };
+        return { base, folder, auth };
     }
 
     // GM_xmlhttpRequest 封装
@@ -529,146 +468,133 @@
         GM_setValue(WEBDAV_CONFIG_KEY, webdavConfig);
     }
 
-    // 配置对象构造
-    function createConfigObject(base = {}, reason = '手动同步') {
+    // 获取本地数据快照（按文件分类）
+    function getLocalDataByFile() {
         return {
-            ...base,
-            keywords: keywords,
-            blockedUsers: blockedUsers,
-            timeFilterDays: timeFilterDays,
-            lastModified: Date.now(),
-            reason,
-            timestamp: new Date().toISOString(),
-            _script_version: SCRIPT_VERSION
+            keywords: { data: [...keywords], lastModified: Date.now() },
+            blockedUsers: { data: [...blockedUsers], lastModified: Date.now() },
+            settings: { data: { timeFilterDays }, lastModified: Date.now() }
         };
     }
 
-    // 版本检查与自动升级
-    function checkAndUpgradeVersion(remoteData) {
-        if (!remoteData._script_version || remoteData._script_version === SCRIPT_VERSION) {
-            console.log(`✅ 云端配置版本匹配：v${SCRIPT_VERSION}`);
-            return;
+    // 从远端响应提取数据
+    function extractFileData(response) {
+        if (response.status === 200) {
+            try { return response.response || JSON.parse(response.responseText) || null; } catch { }
         }
-
-        const remoteVer = remoteData._script_version;
-        const cmp = compareVersion(remoteVer, SCRIPT_VERSION);
-
-        if (cmp > 0) {
-            const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
-            showNotification(msg);
-            console.log(msg);
-        } else if (cmp < 0) {
-            console.log(`⬆️ 云端配置 v${remoteVer} 较旧，自动升级中...`);
-            if (!window._zhihu_version_upgrading) {
-                window._zhihu_version_upgrading = true;
-                setTimeout(() => {
-                    syncToWebDAV('自动版本升级')
-                        .then(() => {
-                            const msg = `✅ 云端配置已升级：v${remoteVer} → v${SCRIPT_VERSION}`;
-                            console.log(msg);
-                            showNotification(msg);
-                        })
-                        .catch(() => showNotification('❌ 自动升级失败'))
-                        .finally(() => window._zhihu_version_upgrading = false);
-                }, 1500);
-            }
-        }
+        return null;
     }
 
-    // 合并字段
-    function mergeFields(data) {
-        let updated = false;
-
-        if (Array.isArray(data.keywords)) {
-            keywords = data.keywords;
-            GM_setValue(STORAGE_PREFIX + 'keywords', keywords);
-            updated = true;
-        }
-        if (Array.isArray(data.blockedUsers)) {
-            blockedUsers = data.blockedUsers;
-            GM_setValue(STORAGE_PREFIX + 'blocked_users', blockedUsers);
-            updated = true;
-        }
-        if (typeof data.timeFilterDays === 'number') {
-            timeFilterDays = data.timeFilterDays;
-            GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
-            updated = true;
-        }
-
-        return updated;
+    // 上传单个文件到 WebDAV
+    function uploadFile(fileName, content) {
+        const { folder, auth } = getWebDAVUrls();
+        const url = folder + fileName;
+        return new Promise(resolve => {
+            webdavRequest({
+                method: 'PUT',
+                url,
+                data: JSON.stringify(content, null, 2),
+                headers: { 'Content-Type': 'application/json; charset=utf-8', auth }
+            }, res => {
+                resolve(res.status >= 200 && res.status < 300);
+            });
+        });
     }
 
-    // 从WebDAV拉取数据
+    // 下载单个文件从 WebDAV
+    function downloadFile(fileName) {
+        const { folder, auth } = getWebDAVUrls();
+        const url = folder + fileName;
+        return new Promise(resolve => {
+            webdavRequest({ method: 'GET', url, responseType: 'json' }, res => {
+                resolve(extractFileData(res));
+            });
+        });
+    }
+
+    // 确保 WebDAV 目录存在
+    function ensureFolder() {
+        const { folder, auth } = getWebDAVUrls();
+        return new Promise(resolve => {
+            webdavRequest({ method: 'PROPFIND', url: folder }, res => {
+                if (res.status === 404) {
+                    webdavRequest({ method: 'MKCOL', url: folder }, () => resolve());
+                } else {
+                    resolve();
+                }
+            });
+        });
+    }
+
+    // 推送同步（上传所有文件）
+    function syncToWebDAV(reason = '手动同步') {
+        if (!webdavConfig.url || !webdavConfig.username || !webdavConfig.password) {
+            console.log('❌ 请先在脚本设置中配置 WebDAV 信息！');
+            return Promise.resolve(false);
+        }
+
+        return ensureFolder().then(() => {
+            const localData = getLocalDataByFile();
+            const uploads = Object.entries(WEBDAV_FILES).map(([key, fileName]) =>
+                uploadFile(fileName, localData[key])
+            );
+            return Promise.all(uploads).then(results => {
+                const allSuccess = results.every(Boolean);
+                if (allSuccess) {
+                    updateLastSync(Date.now());
+                    console.log(`📤 上传成功 (${reason})`);
+                } else {
+                    console.log('❌ 部分文件上传失败');
+                }
+                return allSuccess;
+            });
+        });
+    }
+
+    // 拉取同步（下载所有文件）
     function syncFromWebDAV() {
         if (!webdavConfig.enabled || !webdavConfig.url) return Promise.resolve(false);
 
-        const { file } = getWebDAVUrls();
+        return ensureFolder().then(() => {
+            const files = Object.entries(WEBDAV_FILES);
+            return Promise.all(files.map(([key, fileName]) =>
+                downloadFile(fileName).then(remoteData => {
+                    if (!remoteData) return false;
 
-        return new Promise(resolve => {
-            webdavRequest({ method: 'GET', url: file, responseType: 'json' }, res => {
-                if (res.status !== 200) {
-                    if (res.status === 404) {
-                        console.log('🔄 文件不存在，初始化上传');
-                        syncToWebDAV('初始化同步').then(() => resolve(false));
-                    } else {
-                        console.error('❌ 拉取失败:', res.status);
-                        resolve(false);
+                    const localTS = webdavConfig.lastSync || 0;
+                    const remoteTS = remoteData.lastModified || 0;
+                    if (remoteTS <= localTS) return false;
+
+                    // 按文件类型合并到本地
+                    if (key === 'settings') {
+                        const d = remoteData.data || {};
+                        if (typeof d.timeFilterDays === 'number') {
+                            timeFilterDays = d.timeFilterDays;
+                            GM_setValue(TIME_FILTER_DAYS_KEY, timeFilterDays);
+                            return true;
+                        }
+                        return false;
                     }
-                    return;
-                }
 
-                let data;
-                try { data = res.response || {}; } catch { data = {}; }
-
-                const localTS = webdavConfig.lastSync || 0;
-                const remoteTS = data.lastModified || 0;
-                const remoteVer = data._script_version;
-
-                // 1. 时间戳判断：是否需要下载
-                const shouldDownload = remoteTS > localTS;
-                // 2. 版本判断：是否需要上传（即使时间戳最新）
-                const shouldUpload = remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) < 0;
-
-                let finalResolved = false;
-
-                // === 情况1：远端时间更新 → 下载合并 ===
-                if (shouldDownload) {
-                    const updated = mergeFields(data);
-                    if (updated) {
-                        updateLastSync(remoteTS);
-                        const msg = '✅ 时间戳更新：已从云端同步数据';
-                        console.log(msg);
-                        showNotification(msg);
-                        checkAndUpgradeVersion(data); // 可能触发上传
-                        resolve(true);
-                        finalResolved = true;
+                    // keywords, blockedUsers
+                    if (Array.isArray(remoteData.data)) {
+                        window[key] = remoteData.data;
+                        GM_setValue(STORAGE_PREFIX + key.toLowerCase(), remoteData.data);
+                        return true;
                     }
-                }
-
-                // === 情况2：远端版本落后 → 强制上传（即使时间戳最新）===
-                if (shouldUpload && !finalResolved) {
-                    console.log(`⬆️ 远端版本 v${remoteVer} 落后，强制升级`);
-                    syncToWebDAV('强制版本升级')
-                        .then(success => {
-                            if (success) {
-                                showNotification(`✅ 远端配置已强制升级至 v${SCRIPT_VERSION}`);
-                                updateLastSync(Date.now());
-                            }
-                            resolve(success);
-                        });
-                    return;
-                }
-
-                // === 情况3：两者都不需要 ===
-                if (!finalResolved) {
+                    return false;
+                })
+            )).then(results => {
+                const updated = results.some(Boolean);
+                if (updated) {
+                    updateLastSync(Date.now());
+                    const msg = '✅ 已从云端同步数据';
+                    console.log(msg);
+                    showNotification(msg);
+                } else {
                     console.log('✅ 本地已是最新，无需操作');
-                    if (remoteVer && compareVersion(remoteVer, SCRIPT_VERSION) > 0) {
-                        const msg = `🚨 警告：云端配置 v${remoteVer} 高于本地 v${SCRIPT_VERSION}，请升级脚本！`;
-                        showNotification(msg);
-                        console.log(msg);
-                    }
-                    resolve(false);
                 }
+                return updated;
             });
         });
     }
