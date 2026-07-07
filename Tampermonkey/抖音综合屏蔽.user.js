@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         抖音内容屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      26.6.14
+// @version      26.6.20
 // @description  屏蔽抖音精选页面和推荐页面的视频内容，支持关键词、作者、视频ID屏蔽
 // @author       SI Xiaolong
 // @match        https://www.douyin.com/*
@@ -20,7 +20,8 @@
         KEYWORDS: 'blocked_keywords',
         AUTHORS: 'blocked_authors',
         VIDEO_IDS: 'blocked_video_ids',
-        BLOCK_ALL_LIVE: 'block_all_live'
+        BLOCK_ALL_LIVE: 'block_all_live',
+        HIDE_FEATURED_CARD: 'hide_featured_card'
     };
 
     // 获取屏蔽列表
@@ -37,6 +38,16 @@
     // 设置屏蔽直播开关状态
     function setBlockAllLive(value) {
         GM_setValue(CONFIG_KEYS.BLOCK_ALL_LIVE, value);
+    }
+
+    // 获取隐藏精选页大卡片开关状态
+    function getHideFeaturedCard() {
+        return GM_getValue(CONFIG_KEYS.HIDE_FEATURED_CARD, true);
+    }
+
+    // 设置隐藏精选页大卡片开关状态
+    function setHideFeaturedCard(value) {
+        GM_setValue(CONFIG_KEYS.HIDE_FEATURED_CARD, value);
     }
 
     // 保存屏蔽列表
@@ -121,8 +132,20 @@
     // ====== 页面类型检测 ======
     function getPageType() {
         const url = window.location.href;
-        if (url.includes('/jingxuan')) return 'jingxuan';
-        if (url.includes('?recommend=') || url === 'https://www.douyin.com/' || url === 'https://www.douyin.com') return 'recommend';
+        if (url.includes('/jingxuan') || url === 'https://www.douyin.com/' || url === 'https://www.douyin.com') {
+            // 检测当前可见的标签页内容
+            const visiblePanel = document.querySelector('[role="tabpanel"][aria-hidden="false"]');
+            if (visiblePanel) {
+                if (visiblePanel.querySelector('.sliderVideo, [data-e2e="feed-active-video"]')) {
+                    return 'recommend';
+                }
+                if (visiblePanel.querySelector('.discover-video-card-item')) {
+                    return 'jingxuan';
+                }
+            }
+            return 'jingxuan';
+        }
+        if (url.includes('?recommend=')) return 'recommend';
         return 'unknown';
     }
 
@@ -153,11 +176,11 @@
 
     // 推荐页面：检查是否为直播
     function isRecommendLiveElement(videoElement) {
-        // 直播标签出现在视频播放器容器上（典型的直播容器有特殊类名）
-        if (videoElement.querySelector('.n_CDmYLU, .LivePlayer_PreCreatePlayer')) return true;
-        // 检查视频信息区域是否包含直播标识
-        const infoEl = videoElement.querySelector('[data-e2e="video-info"]');
-        if (infoEl && (infoEl.textContent.includes('正在直播') || infoEl.textContent.includes('直播中'))) return true;
+        // 直播标签出现在视频播放器容器上
+        if (videoElement.querySelector('.LiveLinkA, .LivePlayer_PreCreatePlayer, .LivePlayer_Preview')) return true;
+        // 检查整个元素是否包含直播标识
+        const text = videoElement.textContent;
+        if (text.includes('直播中') || text.includes('首播中') || text.includes('正在直播')) return true;
         return false;
     }
 
@@ -289,13 +312,17 @@
 
     // 检查是否为直播元素
     function isLiveElement(videoElement) {
-        // 直播元素特征：包含"正在直播"标识
-        const liveIndicator = videoElement.querySelector('.itnjms9W');
+        // 直播元素特征：包含直播标识 class
+        const liveIndicator = videoElement.querySelector('.LiveLinkA, .LivePlayer_PreCreatePlayer, .LivePlayer_Preview');
         if (liveIndicator) return true;
+        // 检查是否包含"直播中"或"首播中"标识
         const allElements = videoElement.querySelectorAll('*');
         for (const el of allElements) {
-            if (el.children.length === 0 && el.textContent.trim() === '正在直播') {
-                return true;
+            if (el.children.length === 0) {
+                const text = el.textContent.trim();
+                if (text === '正在直播' || text === '直播中' || text === '首播中') {
+                    return true;
+                }
             }
         }
         return false;
@@ -303,8 +330,9 @@
 
     // 获取视频/直播的标题和作者
     function getVideoInfo(videoElement) {
-        let titleElement = videoElement.querySelector('.z72L2AHI');
-        let authorElement = videoElement.querySelector('.tD3Pzgfx');
+        // 新 class 选择器（适配抖音最新页面结构）
+        let titleElement = videoElement.querySelector('.tpc3FG9j');
+        let authorElement = videoElement.querySelector('.hNV3zCze');
 
         // 后备策略：在卡片的信息区域中寻找标题和作者
         if (!titleElement) {
@@ -328,21 +356,17 @@
         }
 
         if (!authorElement) {
-            // 在后备中查找作者：寻找包含但不仅限于 @ 的短文本
-            videoElement.querySelectorAll('span').forEach(el => {
+            // 后备：查找包含 @ 的短文本元素
+            videoElement.querySelectorAll('div, span').forEach(el => {
                 const text = el.textContent.trim();
-                // 作者名通常是不包含特殊字符（除@外）且长度适中的文本
-                if (text.length > 0 && text.length < 30 && !text.includes('·') && !text.includes('/') && !text.includes(':')) {
-                    // 排除纯数字（播放量）、时间格式
-                    if (!/^[\d.万亿]+$/.test(text) && !/^\d+:\d+$/.test(text)) {
-                        authorElement = el;
-                    }
+                if (text.startsWith('@') && text.length < 25 && !text.includes('·')) {
+                    authorElement = el;
                 }
             });
         }
 
         const title = titleElement ? titleElement.textContent.trim() : '';
-        const author = authorElement ? authorElement.textContent.trim() : '';
+        const author = authorElement ? authorElement.textContent.trim().replace(/^@/, '') : '';
 
         return { title, author };
     }
@@ -396,14 +420,6 @@
         `;
 
         const menuItems = [
-            { text: `屏蔽标题关键词`, action: () => {
-                const keyword = prompt('请输入要屏蔽的关键词（从标题中提取）:', title.substring(0, 20));
-                if (keyword) {
-                    addToBlockList(CONFIG_KEYS.KEYWORDS, keyword);
-                    scanAndBlockVideos();
-                    showNotification(`已屏蔽关键词: ${keyword}`);
-                }
-            }, disabled: !title},
             { text: `屏蔽作者: ${author}`, action: () => {
                 if (author) {
                     addToBlockList(CONFIG_KEYS.AUTHORS, author);
@@ -479,34 +495,24 @@
         return false;
     }
 
-    // 隐藏视频元素
-    function hideVideo(videoElement, reason = '') {
+    // 对视频卡片应用深度高斯模糊（保留完整布局，视觉上隐藏）
+    function blurVideo(videoElement, reason = '') {
         const videoId = videoElement.getAttribute('data-aweme-id');
         const { title, author } = getVideoInfo(videoElement);
         console.log(
-            `%c[抖音屏蔽] 已屏蔽精选页视频 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)} | 原因: ${reason}`,
+            `%c[抖音屏蔽] 已模糊屏蔽视频 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)} | 原因: ${reason}`,
             'color: #ff6b6b; font-weight: bold;'
         );
-        // 停止可能正在播放的媒体
+        // 停止播放
         videoElement.querySelectorAll('video, audio').forEach(media => {
             media.pause();
             media.removeAttribute('src');
             media.load();
         });
-        videoElement.style.display = 'none';
-        videoElement.setAttribute('data-blocked', 'true');
-    }
-
-    // 显示视频元素
-    function showVideo(videoElement) {
-        const videoId = videoElement.getAttribute('data-aweme-id');
-        const { title, author } = getVideoInfo(videoElement);
-        console.log(
-            `%c[抖音屏蔽] 已取消屏蔽精选页视频 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)}`,
-            'color: #52c41a; font-weight: bold;'
-        );
-        videoElement.style.display = '';
-        videoElement.removeAttribute('data-blocked');
+        // 应用深度高斯模糊，保留完整卡片结构和布局
+        videoElement.style.filter = 'blur(40px)';
+        videoElement.style.pointerEvents = 'none';
+        videoElement.style.opacity = '0.3';
     }
 
     // 检查是否为广告元素
@@ -526,25 +532,48 @@
         return false;
     }
 
-    // 扫描并屏蔽视频（自动检测页面类型）
-    function scanAndBlockVideos() {
-        const pageType = getPageType();
-        if (pageType === 'unknown') return;
-        if (pageType === 'recommend') {
-            scanRecommendPage();
-            return;
-        }
+    // 对精选页默认播放的大卡片应用深度高斯模糊
+    function blurFeaturedCard() {
+        if (!getHideFeaturedCard()) return;
+        const firstCard = document.querySelector('.discover-video-card-item');
+        if (!firstCard) return;
+        // 检查是否包含视频播放器（默认播放的大卡片特征）
+        const hasPlayer = firstCard.querySelector('.xgplayer, video, [class*="basePlayerContainer"]');
+        if (!hasPlayer) return;
+        // 获取标题用于日志
+        const { title, author } = getVideoInfo(firstCard);
+        const videoId = firstCard.getAttribute('data-aweme-id');
+        console.log(
+            `%c[抖音屏蔽] 已模糊屏蔽精选页默认播放大卡片 | ID: ${videoId || '未知'} | 作者: ${author || '未知'} | 标题: ${(title || '未知').substring(0, 40)}`,
+            'color: #ff6b6b; font-weight: bold;'
+        );
+        // 停止播放
+        firstCard.querySelectorAll('video, audio').forEach(media => {
+            media.pause();
+            media.removeAttribute('src');
+            media.load();
+        });
+        // 应用深度高斯模糊，保留完整卡片结构和布局
+        firstCard.style.filter = 'blur(40px)';
+        firstCard.style.pointerEvents = 'none';
+        firstCard.style.opacity = '0.3';
+    }
 
-        // jingxuan 页面逻辑
+    // 扫描精选页视频
+    function scanJingxuanVideos() {
+        // 先处理默认播放的大卡片
+        blurFeaturedCard();
+
         const videos = document.querySelectorAll('.discover-video-card-item');
+        if (videos.length === 0) return;
         const blockAllLive = getBlockAllLive();
         videos.forEach(video => {
             if (isAdElement(video)) {
-                hideVideo(video, '广告');
+                blurVideo(video, '广告');
                 return;
             }
             if (blockAllLive && isLiveElement(video)) {
-                hideVideo(video, '屏蔽所有直播');
+                blurVideo(video, '屏蔽所有直播');
                 return;
             }
             if (shouldBlockVideo(video)) {
@@ -557,93 +586,101 @@
                 if (videoId && blockedIds.includes(videoId)) reason = '视频ID黑名单';
                 else if (author && blockedAuthors.some(b => matchText(author, b))) reason = '作者黑名单';
                 else if (blockedKeywords.some(k => matchText(title, k))) reason = '标题关键词黑名单';
-                hideVideo(video, reason);
-            } else if (video.getAttribute('data-blocked')) {
-                showVideo(video);
+                blurVideo(video, reason);
             }
         });
     }
 
-    // 监听右键点击
-    function attachContextMenu() {
+    // 扫描并屏蔽视频（自动检测页面类型）
+    function scanAndBlockVideos() {
         const pageType = getPageType();
         if (pageType === 'unknown') return;
 
+        if (pageType === 'recommend') {
+            // 推荐页：只扫描推荐内容
+            scanRecommendPage();
+        } else {
+            // 精选页：只扫描精选内容
+            scanJingxuanVideos();
+        }
+    }
+
+    // 监听右键点击
+    function attachContextMenu() {
         document.addEventListener('contextmenu', (e) => {
-            if (pageType === 'recommend') {
-                // 推荐页：优先检测是否右键在作者名上
-                const authorEl = e.target.closest('[data-e2e="feed-video-nickname"], .account-name');
-                if (authorEl) {
-                    e.preventDefault();
-                    e.stopPropagation();
+            // 推荐页：优先检测是否右键在作者名上
+            const authorEl = e.target.closest('[data-e2e="feed-video-nickname"], .account-name');
+            if (authorEl) {
+                e.preventDefault();
+                e.stopPropagation();
 
-                    const videoElement = authorEl.closest('.sliderVideo');
-                    if (!videoElement || videoElement.getAttribute('data-blocked')) return;
+                const videoElement = authorEl.closest('.sliderVideo');
+                if (!videoElement || videoElement.getAttribute('data-blocked')) return;
 
-                    const author = authorEl.textContent.trim().replace(/^@/, '');
-                    if (!author) return;
+                const author = authorEl.textContent.trim().replace(/^@/, '');
+                if (!author) return;
 
-                    const existingMenu = document.getElementById('douyin-block-menu');
-                    if (existingMenu) existingMenu.remove();
+                const existingMenu = document.getElementById('douyin-block-menu');
+                if (existingMenu) existingMenu.remove();
 
-                    const menu = document.createElement('div');
-                    menu.id = 'douyin-block-menu';
-                    menu.style.cssText = `
-                        position: fixed;
-                        left: ${e.clientX}px;
-                        top: ${e.clientY}px;
-                        background: white;
-                        border: 1px solid #ccc;
-                        border-radius: 4px;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                        z-index: 999999;
-                        min-width: 160px;
-                        font-size: 14px;
-                    `;
+                const menu = document.createElement('div');
+                menu.id = 'douyin-block-menu';
+                menu.style.cssText = `
+                    position: fixed;
+                    left: ${e.clientX}px;
+                    top: ${e.clientY}px;
+                    background: white;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                    z-index: 999999;
+                    min-width: 160px;
+                    font-size: 14px;
+                `;
 
-                    const menuItem = document.createElement('div');
-                    menuItem.textContent = `屏蔽作者: ${author}`;
-                    menuItem.style.cssText = `
-                        padding: 8px 16px;
-                        cursor: pointer;
-                        transition: background 0.2s;
-                    `;
-                    menuItem.onmouseover = () => menuItem.style.background = '#f0f0f0';
-                    menuItem.onmouseout = () => menuItem.style.background = 'white';
-                    menuItem.onclick = () => {
-                        addToBlockList(CONFIG_KEYS.AUTHORS, author);
-                        scanAndBlockVideos();
-                        showNotification(`已屏蔽作者: ${author}`);
+                const menuItem = document.createElement('div');
+                menuItem.textContent = `屏蔽作者: ${author}`;
+                menuItem.style.cssText = `
+                    padding: 8px 16px;
+                    cursor: pointer;
+                    transition: background 0.2s;
+                `;
+                menuItem.onmouseover = () => menuItem.style.background = '#f0f0f0';
+                menuItem.onmouseout = () => menuItem.style.background = 'white';
+                menuItem.onclick = () => {
+                    addToBlockList(CONFIG_KEYS.AUTHORS, author);
+                    scanAndBlockVideos();
+                    showNotification(`已屏蔽作者: ${author}`);
+                    menu.remove();
+                };
+                menu.appendChild(menuItem);
+                document.body.appendChild(menu);
+
+                setTimeout(() => {
+                    document.addEventListener('click', function closeMenu() {
                         menu.remove();
-                    };
-                    menu.appendChild(menuItem);
-                    document.body.appendChild(menu);
+                        document.removeEventListener('click', closeMenu);
+                    });
+                }, 100);
+                return;
+            }
 
-                    setTimeout(() => {
-                        document.addEventListener('click', function closeMenu() {
-                            menu.remove();
-                            document.removeEventListener('click', closeMenu);
-                        });
-                    }, 100);
-                    return;
-                }
+            // 推荐页：右键视频卡片 → 完整菜单
+            const recommendVideo = e.target.closest('.sliderVideo');
+            if (recommendVideo) {
+                if (isRecommendAdElement(recommendVideo)) return;
+                const { title, author } = getRecommendVideoInfo(recommendVideo);
+                const videoId = extractVideoIdFromClass(recommendVideo);
+                const isLive = isRecommendLiveElement(recommendVideo);
+                createRecommendContextMenu(recommendVideo, e, { title, author, videoId, isLive });
+                return;
+            }
 
-                // 推荐页：右键视频卡片 → 完整菜单
-                const videoElement = e.target.closest('.sliderVideo');
-                if (videoElement) {
-                    if (isRecommendAdElement(videoElement)) return;
-                    const { title, author } = getRecommendVideoInfo(videoElement);
-                    const videoId = extractVideoIdFromClass(videoElement);
-                    const isLive = isRecommendLiveElement(videoElement);
-                    createRecommendContextMenu(videoElement, e, { title, author, videoId, isLive });
-                }
-            } else {
-                // 精选页
-                const videoElement = e.target.closest('.discover-video-card-item');
-                if (videoElement) {
-                    if (isAdElement(videoElement)) return;
-                    createContextMenu(videoElement, e);
-                }
+            // 精选页
+            const jingxuanVideo = e.target.closest('.discover-video-card-item');
+            if (jingxuanVideo) {
+                if (isAdElement(jingxuanVideo)) return;
+                createContextMenu(jingxuanVideo, e);
             }
         }, true);
     }
@@ -674,14 +711,6 @@
         `;
 
         const menuItems = [
-            { text: `屏蔽标题关键词`, action: () => {
-                const keyword = prompt('请输入要屏蔽的关键词（从标题中提取）:', title.substring(0, 20));
-                if (keyword) {
-                    addToBlockList(CONFIG_KEYS.KEYWORDS, keyword);
-                    scanAndBlockVideos();
-                    showNotification(`已屏蔽关键词: ${keyword}`);
-                }
-            }, disabled: !title},
             { text: `屏蔽作者: ${author}`, action: () => {
                 if (author) {
                     addToBlockList(CONFIG_KEYS.AUTHORS, author);
@@ -793,6 +822,17 @@
                             <span style="font-size: 14px; color: #333;">屏蔽所有直播内容</span>
                         </label>
                     </div>
+                    <div style="margin-bottom: 15px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                        <label style="display: flex; align-items: center; cursor: pointer; user-select: none;">
+                            <input type="checkbox" id="hideFeaturedCardCheckbox" ${getHideFeaturedCard() ? 'checked' : ''} style="
+                                width: 18px;
+                                height: 18px;
+                                margin-right: 8px;
+                                cursor: pointer;
+                            ">
+                            <span style="font-size: 14px; color: #333;">隐藏精选页默认播放的大卡片</span>
+                        </label>
+                    </div>
                     <div style="margin-bottom: 10px; color: #666; font-size: 13px;">
                         ${currentConfig.supportsRegex
                             ? '提示：每行一项，支持正则表达式（用 /pattern/ 格式，如 /福瑞|furry/）'
@@ -861,6 +901,14 @@
                 showNotification(e.target.checked ? '已开启屏蔽所有直播' : '已关闭屏蔽所有直播');
             });
 
+            // 绑定隐藏大卡片开关
+            const featuredCheckbox = dialog.querySelector('#hideFeaturedCardCheckbox');
+            featuredCheckbox.addEventListener('change', (e) => {
+                setHideFeaturedCard(e.target.checked);
+                scanAndBlockVideos();
+                showNotification(e.target.checked ? '已开启隐藏精选页大卡片' : '已关闭隐藏精选页大卡片');
+            });
+
             // 绑定保存按钮
             dialog.querySelector('#saveBtn').addEventListener('click', () => {
                 const textarea = dialog.querySelector('#blockListInput');
@@ -910,40 +958,42 @@
             console.log('初始扫描完成');
         }, 1500);
 
-        if (pageType === 'recommend') {
-            // 推荐页：监听 data-e2e 属性变化（slide 切换）
-            // 抖音使用虚拟滚动，新 slide 变为活跃时 data-e2e 从 feed-video 变为 feed-active-video
-            const waitForSlideList = setInterval(() => {
-                const target = document.querySelector('#slidelist') ||
-                               document.querySelector('.recommend-slidelist') ||
-                               document.querySelector('[data-e2e="slideList"]');
-                if (target) {
-                    clearInterval(waitForSlideList);
-                    console.log('推荐页容器已找到，开始监听');
+        // 监听标签页切换（精选/推荐等）
+        const waitForTabs = setInterval(() => {
+            const tabBar = document.querySelector('.semi-tabs-content') ||
+                           document.querySelector('[class*="discover-tab-container"]');
+            if (tabBar) {
+                clearInterval(waitForTabs);
+                console.log('标签页容器已找到，开始监听');
 
-                    const observer = new MutationObserver(() => {
-                        scanAndBlockVideos();
-                    });
-                    observer.observe(target, {
-                        childList: true,
-                        subtree: true,
-                        attributes: true,
-                        attributeFilter: ['data-e2e']
-                    });
+                // 监听标签页内容变化
+                const observer = new MutationObserver(() => {
+                    scanAndBlockVideos();
+                });
+                observer.observe(tabBar, {
+                    childList: true,
+                    subtree: true,
+                    attributes: true,
+                    attributeFilter: ['aria-hidden', 'data-aweme-id', 'data-e2e']
+                });
+            }
+        }, 500);
 
-                    // 兜底：每 3 秒扫描一次
-                    setInterval(() => {
-                        scanAndBlockVideos();
-                    }, 3000);
-                }
-            }, 500);
-        } else if (pageType === 'jingxuan') {
-            const observer = new MutationObserver(() => {
-                scanAndBlockVideos();
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
-            console.log('精选页监听已启动');
-        }
+        // 兜底：每 3 秒扫描一次
+        setInterval(() => {
+            scanAndBlockVideos();
+        }, 3000);
+
+        // 超时后备
+        setTimeout(() => {
+            if (!document.querySelector('.semi-tabs-content')) {
+                const observer = new MutationObserver(() => {
+                    scanAndBlockVideos();
+                });
+                observer.observe(document.body, { childList: true, subtree: true });
+                console.log('后备监听已启动');
+            }
+        }, 3000);
 
         console.log('抖音内容屏蔽脚本已启动');
     }

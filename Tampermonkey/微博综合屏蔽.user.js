@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.38
+// @version      26.6.22
 // @description  屏蔽推荐、广告、荐读标签、热搜栏、首页广告、首页中栏广告、右侧栏、创作者中心、顶栏推荐/视频和感兴趣的人，屏蔽自定义关键词的微博内容，支持首页跳转、长微博全文检测、自动切换深浅主题和微博将要访问页直接访问
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -2143,18 +2143,23 @@
         // 批量收集需要处理的元素
         const tasks = [];
 
-        // 先添加屏蔽按钮（一次性处理）
-        addBlockButtons();
+        // 微博详情页保留原始微博及评论，不应用内容屏蔽规则。
+        if (!isWeiboDetailPage()) {
+            // 先添加屏蔽按钮（一次性处理）
+            addBlockButtons();
 
-        // 收集所有需要屏蔽的元素
-        tasks.push(() => hideByTags());
-        tasks.push(() => hideByKeywords());
-        tasks.push(() => hideByUserId());
-        tasks.push(() => hideBySourceKeywords());
-        tasks.push(() => hideBySuperTopic());
-        tasks.push(() => hideByTimeFilter());
-        tasks.push(() => hideCommentsByUserId());
-        tasks.push(() => hideByAIContent());
+            // 收集所有需要屏蔽的元素
+            tasks.push(() => hideByTags());
+            tasks.push(() => hideByKeywords());
+            tasks.push(() => hideByUserId());
+            tasks.push(() => hideBySourceKeywords());
+            tasks.push(() => hideBySuperTopic());
+            tasks.push(() => hideByTimeFilter());
+            tasks.push(() => hideCommentsByUserId());
+            tasks.push(() => hideByAIContent());
+        }
+
+        // 页面组件清理不属于微博内容屏蔽，详情页继续生效。
         tasks.push(() => hideHomeMidAd());
         tasks.push(() => hideStandaloneSidebarWidgets());
         tasks.push(() => hideTopNavButtons());
@@ -2170,9 +2175,20 @@
         return location.pathname.startsWith('/hot/weibo/');
     }
 
+    // 判断当前页面是否为单条微博详情页。
+    function isWeiboDetailPage() {
+        const pathname = location.pathname.replace(/\/+$/, '');
+
+        return /^\/\d+\/[A-Za-z0-9]+$/.test(pathname) ||
+            /^\/(?:status|detail)\/[A-Za-z0-9]+$/.test(pathname);
+    }
+
     // 通用隐藏处理函数
     function applyHiddenStyle(feedBody, message, reason) {
-        if (!feedBody || feedBody.classList.contains('custom-hidden') || isProcessed(feedBody, reason)) {
+        if (isWeiboDetailPage() ||
+            !feedBody ||
+            feedBody.classList.contains('custom-hidden') ||
+            isProcessed(feedBody, reason)) {
             return false;
         }
 
@@ -2376,6 +2392,8 @@
 
     // 屏蔽评论区用户
     function hideCommentsByUserId() {
+        if (isWeiboDetailPage()) return;
+
         const commentLists = document.querySelectorAll('.wbpro-list');
 
         commentLists.forEach(list => {
@@ -2958,6 +2976,7 @@
 
         fetchFullTextForFeed(feedBody)
             .then(fullText => {
+                if (isWeiboDetailPage()) return;
                 if (isFeedHidden(feedBody)) return;
 
                 if (fullText) {
@@ -2982,7 +3001,7 @@
 
     // 仅通过后台接口/详情页获取全文做屏蔽判断，不操作页面展开/收起按钮
     function processFullTextForVisibleFeeds() {
-        if (!autoExpandEnabled) return;
+        if (!autoExpandEnabled || isWeiboDetailPage()) return;
         if (Date.now() - lastScrollTime < AUTO_EXPAND_SCROLL_IDLE_MS) {
             scheduleAutoExpand();
             return;

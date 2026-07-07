@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         知乎综合屏蔽
 // @namespace    https://github.com/SIXiaolong1117/Rules
-// @version      0.17
-// @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片
+// @version      26.6.21
+// @description  屏蔽包含自定义关键词的知乎问题，支持正则表达式，可一键添加屏蔽，同时隐藏广告卡片和页面广告
 // @license      MIT
 // @icon         https://zhihu.com/favicon.ico
 // @author       SI Xiaolong
@@ -32,10 +32,12 @@
     // 时间过滤配置
     const TIME_FILTER_DAYS_KEY = STORAGE_PREFIX + 'time_filter_days';
 
-    // 显示设置
+    // 功能设置
     const DEFAULT_SHOW_BLOCK_BUTTON = true;  // 默认显示屏蔽按钮
     const DEFAULT_SHOW_PLACEHOLDER = true;   // 默认显示占位块
     const DEFAULT_ENABLE_SEARCH_FILTER = false;  // 默认不在搜索页过滤
+    const DEFAULT_ENABLE_HIDE_HOT_SEARCH = true;  // 默认隐藏热搜
+    const DEFAULT_ENABLE_HIDE_SALT_CARD = true;  // 默认隐藏盐言作者平台卡片
 
     const SELECTORS = {
         contentItem: '.ContentItem',
@@ -45,7 +47,11 @@
         advertCard: '.TopstoryItem--advertCard',
         authorInfo: '.AuthorInfo, .AnswerItem-authorInfo',
         virtualItem: '.TopstoryItem, .List-item, .SearchResult-Card',
-        dateCreated: 'meta[itemprop="dateCreated"]'
+        dateCreated: 'meta[itemprop="dateCreated"]',
+        pageAdCard: '.Pc-card.Card',
+        topFeedBanner: '.Pc-Business-Card-PcTopFeedBanner',
+        hotSearchCard: '.HotSearchCard',
+        saltCard: '.KfeCollection-CreateSaltCard'
     };
 
     // 初始化关键词列表
@@ -56,6 +62,8 @@
     let showBlockButton = GM_getValue(STORAGE_PREFIX + 'show_block_button', DEFAULT_SHOW_BLOCK_BUTTON);
     let showPlaceholder = GM_getValue(STORAGE_PREFIX + 'show_placeholder', DEFAULT_SHOW_PLACEHOLDER);
     let enableSearchFilter = GM_getValue(STORAGE_PREFIX + 'enable_search_filter', DEFAULT_ENABLE_SEARCH_FILTER);
+    let enableHideHotSearch = GM_getValue(STORAGE_PREFIX + 'enable_hide_hot_search', DEFAULT_ENABLE_HIDE_HOT_SEARCH);
+    let enableHideSaltCard = GM_getValue(STORAGE_PREFIX + 'enable_hide_salt_card', DEFAULT_ENABLE_HIDE_SALT_CARD);
 
     // WebDAV配置
     let webdavConfig = GM_getValue(WEBDAV_CONFIG_KEY, {
@@ -69,6 +77,58 @@
     // 统计隐藏的内容
     let hiddenCount = 0;
     const hiddenDetails = [];
+
+    // 预先隐藏热搜的样式 ID（用于在 CSS 层面提前隐藏，防止闪烁）
+    const HOT_SEARCH_HIDE_STYLE_ID = 'zhihu-hot-search-hide-style';
+    const SALT_CARD_HIDE_STYLE_ID = 'zhihu-salt-card-hide-style';
+
+    // 更新热搜隐藏样式
+    function updateHotSearchHideStyle() {
+        let styleEl = document.getElementById(HOT_SEARCH_HIDE_STYLE_ID);
+        if (enableHideHotSearch) {
+            if (!styleEl) {
+                styleEl = document.createElement('style');
+                styleEl.id = HOT_SEARCH_HIDE_STYLE_ID;
+                styleEl.textContent = '.HotSearchCard { display: none !important; }';
+                const parent = document.head || document.documentElement;
+                if (parent) {
+                    parent.appendChild(styleEl);
+                } else {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        (document.head || document.documentElement).appendChild(styleEl);
+                    }, { once: true });
+                }
+            }
+        } else {
+            if (styleEl) {
+                styleEl.remove();
+            }
+        }
+    }
+
+    // 更新盐言作者平台卡片隐藏样式
+    function updateSaltCardHideStyle() {
+        let styleEl = document.getElementById(SALT_CARD_HIDE_STYLE_ID);
+        if (enableHideSaltCard) {
+            if (!styleEl) {
+                styleEl = document.createElement('style');
+                styleEl.id = SALT_CARD_HIDE_STYLE_ID;
+                styleEl.textContent = '.KfeCollection-CreateSaltCard { display: none !important; }';
+                const parent = document.head || document.documentElement;
+                if (parent) {
+                    parent.appendChild(styleEl);
+                } else {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        (document.head || document.documentElement).appendChild(styleEl);
+                    }, { once: true });
+                }
+            }
+        } else {
+            if (styleEl) {
+                styleEl.remove();
+            }
+        }
+    }
 
     // 深浅色模式样式
     const styles = `
@@ -738,7 +798,7 @@
                     <div>• 匹配到关键词的问题将被隐藏</div>
                     <div>• 点击问题旁的"屏蔽"按钮可快速添加关键词</div>
                     <div>• 按 F8 键将选中文本添加到屏蔽词</div>
-                    <div>• 同时自动隐藏广告卡片 (TopstoryItem--advertCard)</div>
+                    <div>• 同时自动隐藏广告卡片 (TopstoryItem--advertCard, Pc-card, 顶部横幅广告)</div>
                 </div>
                 <div id="users-help" style="display: none;">
                     <div><strong>用户屏蔽说明：</strong></div>
@@ -818,6 +878,7 @@
             // 重新执行屏蔽
             hideQuestions();
             hideAdvertCards();
+            hidePageAdCards();
 
             // 显示成功提示
             showNotification(`已保存 ${keywords.length} 个关键词和 ${blockedUsers.length} 个屏蔽用户`);
@@ -975,6 +1036,55 @@
         });
     }
 
+    // 隐藏页面广告（Pc-card 和顶部横幅广告）
+    function hidePageAdCards() {
+        // 隐藏 Pc-card 广告卡片
+        const pcCards = document.querySelectorAll(SELECTORS.pageAdCard);
+        pcCards.forEach(card => {
+            if (hideElementWithMessage(card, '已隐藏页面广告', 'page-ad')) {
+                logHiddenContent('Pc-card.Card', '页面广告', card, '页面广告', '自动屏蔽');
+            }
+        });
+
+        // 隐藏顶部横幅广告
+        const topBanners = document.querySelectorAll(SELECTORS.topFeedBanner);
+        topBanners.forEach(banner => {
+            if (hideElementWithMessage(banner, '已隐藏顶部横幅广告', 'top-banner')) {
+                logHiddenContent('Pc-Business-Card-PcTopFeedBanner', '顶部横幅广告', banner, '顶部横幅广告', '自动屏蔽');
+            }
+        });
+    }
+
+    // 隐藏热搜
+    function hideHotSearch() {
+        // 先确保 CSS 样式与设置同步
+        updateHotSearchHideStyle();
+
+        if (!enableHideHotSearch) return;
+
+        const hotSearchCards = document.querySelectorAll(SELECTORS.hotSearchCard);
+        hotSearchCards.forEach(card => {
+            if (hideElementWithMessage(card, '已隐藏热搜', 'hot-search')) {
+                logHiddenContent('HotSearchCard', '热搜', card, '热搜', '自动屏蔽');
+            }
+        });
+    }
+
+    // 隐藏盐言作者平台卡片
+    function hideSaltCard() {
+        // 先确保 CSS 样式与设置同步
+        updateSaltCardHideStyle();
+
+        if (!enableHideSaltCard) return;
+
+        const saltCards = document.querySelectorAll(SELECTORS.saltCard);
+        saltCards.forEach(card => {
+            if (hideElementWithMessage(card, '已隐藏盐言作者平台卡片', 'salt-card')) {
+                logHiddenContent('KfeCollection-CreateSaltCard', '盐言作者平台卡片', card, '盐言作者平台', '自动屏蔽');
+            }
+        });
+    }
+
     function hideQuestions() {
         // 在问题详情页和用户主页不启用屏蔽功能
         const isQuestionPage = window.location.href.includes('/question/');
@@ -1044,6 +1154,15 @@
 
         // 隐藏广告卡片
         hideAdvertCards();
+
+        // 隐藏页面广告
+        hidePageAdCards();
+
+        // 隐藏热搜
+        hideHotSearch();
+
+        // 隐藏盐言作者平台卡片
+        hideSaltCard();
     }
 
     // 显示通知
@@ -1353,7 +1472,11 @@
             SELECTORS.answerItem,
             SELECTORS.advertCard,
             SELECTORS.virtualItem,
-            SELECTORS.contentTitle
+            SELECTORS.contentTitle,
+            SELECTORS.pageAdCard,
+            SELECTORS.topFeedBanner,
+            SELECTORS.hotSearchCard,
+            SELECTORS.saltCard
         ]);
     }
 
@@ -1374,8 +1497,9 @@
             `👤 屏蔽用户: ${blockedUsers.length} 个\n` +
             `⏰ 时间过滤: ${timeFilterDays > 0 ? timeFilterDays + '天前' : '禁用'}\n` +
             `📄 当前页面: ${pageType}\n` +
-            `📱 同时隐藏广告卡片 (TopstoryItem--advertCard)\n` +
-            `🔗 WebDAV同步: ${webdavConfig.enabled ? '已启用' : '未启用'}\n` +
+            `📱 同时隐藏广告卡片 (TopstoryItem--advertCard, Pc-card, 顶部横幅广告)\n` +
+            `🔥 隐藏热搜: ${enableHideHotSearch ? '启用' : '禁用'}\n` +
+            `🧂 隐藏盐言作者平台: ${enableHideSaltCard ? '启用' : '禁用'}\n` +
             `🔍 搜索页过滤: ${enableSearchFilter ? '启用' : '禁用'}\n` +
             `🔘 屏蔽按钮: ${showBlockButton ? '显示' : '隐藏'}\n` +
             `📦 占位块: ${showPlaceholder ? '显示' : '隐藏'}\n` +
@@ -1385,7 +1509,7 @@
         );
     }
 
-    // 显示显示设置界面
+    // 显示功能设置界面
     function showDisplaySettings() {
         // 创建遮罩层
         const overlay = document.createElement('div');
@@ -1396,7 +1520,7 @@
         settingsModal.className = 'keyword-manager-modal';
         settingsModal.innerHTML = `
         <div class="keyword-manager">
-            <h3>显示设置</h3>
+            <h3>功能设置</h3>
             <div style="margin-bottom: 15px;">
                 <label style="display: flex; align-items: center; margin-bottom: 10px;">
                     <input type="checkbox" id="show-block-button" ${showBlockButton ? 'checked' : ''} style="margin-right: 8px;">
@@ -1405,6 +1529,14 @@
                 <label style="display: flex; align-items: center; margin-bottom: 10px;">
                     <input type="checkbox" id="show-placeholder" ${showPlaceholder ? 'checked' : ''} style="margin-right: 8px;">
                     显示已屏蔽内容的占位块
+                </label>
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="enable-hide-hot-search" ${enableHideHotSearch ? 'checked' : ''} style="margin-right: 8px;">
+                    隐藏热搜
+                </label>
+                <label style="display: flex; align-items: center; margin-bottom: 10px;">
+                    <input type="checkbox" id="enable-hide-salt-card" ${enableHideSaltCard ? 'checked' : ''} style="margin-right: 8px;">
+                    隐藏盐言作者平台卡片
                 </label>
             </div>
             <div class="button-group">
@@ -1415,6 +1547,8 @@
                 <div><strong>设置说明:</strong></div>
                 <div>• 屏蔽按钮: 在问题标题旁显示"屏蔽"按钮,方便快速屏蔽问题</div>
                 <div>• 占位块: 被屏蔽的内容会显示灰色提示框,取消则完全隐藏</div>
+                <div>• 隐藏热搜: 隐藏首页的"大家都在搜"热搜卡片</div>
+                <div>• 隐藏盐言作者平台: 隐藏首页的盐言作者平台推广卡片</div>
             </div>
         </div>
     `;
@@ -1423,18 +1557,30 @@
         settingsModal.querySelector('.save-btn').addEventListener('click', function () {
             const newShowBlockButton = settingsModal.querySelector('#show-block-button').checked;
             const newShowPlaceholder = settingsModal.querySelector('#show-placeholder').checked;
+            const newEnableHideHotSearch = settingsModal.querySelector('#enable-hide-hot-search').checked;
+            const newEnableHideSaltCard = settingsModal.querySelector('#enable-hide-salt-card').checked;
 
             showBlockButton = newShowBlockButton;
             showPlaceholder = newShowPlaceholder;
+            enableHideHotSearch = newEnableHideHotSearch;
+            enableHideSaltCard = newEnableHideSaltCard;
 
             GM_setValue(STORAGE_PREFIX + 'show_block_button', showBlockButton);
             GM_setValue(STORAGE_PREFIX + 'show_placeholder', showPlaceholder);
+            GM_setValue(STORAGE_PREFIX + 'enable_hide_hot_search', enableHideHotSearch);
+            GM_setValue(STORAGE_PREFIX + 'enable_hide_salt_card', enableHideSaltCard);
+
+            // 立即更新热搜隐藏样式（无需刷新页面）
+            updateHotSearchHideStyle();
+
+            // 立即更新盐言作者平台卡片隐藏样式（无需刷新页面）
+            updateSaltCardHideStyle();
 
             // 关闭设置窗口
             overlay.remove();
             settingsModal.remove();
 
-            showNotification('显示设置已保存');
+            showNotification('功能设置已保存');
 
             // 重新执行屏蔽以应用新设置
             location.reload(); // 刷新页面以应用新设置
@@ -1583,7 +1729,7 @@
     GM_registerMenuCommand('搜索页过滤设置', showSearchFilterSettings);
     GM_registerMenuCommand('设置WebDAV同步', showWebDAVConfig);
     GM_registerMenuCommand('设置时间过滤天数', showTimeFilterConfig);
-    GM_registerMenuCommand('显示设置', showDisplaySettings);
+    GM_registerMenuCommand('功能设置', showDisplaySettings);
 
     // 初始化
     function init() {
@@ -1597,6 +1743,12 @@
 
         // 输出脚本启动信息
         logScriptInfo();
+
+        // 初始化热搜隐藏样式（在页面渲染前生效，防止闪烁）
+        updateHotSearchHideStyle();
+
+        // 初始化盐言作者平台卡片隐藏样式（在页面渲染前生效，防止闪烁）
+        updateSaltCardHideStyle();
 
         // 添加键盘事件监听（在所有知乎站点都启用）
         document.addEventListener('keydown', handleKeyPress);
@@ -1683,6 +1835,9 @@
         setInterval(observeVisibleItems, 2000);
         setInterval(() => {
             hideAdvertCards();
+            hidePageAdCards();
+            hideHotSearch();
+            hideSaltCard();
             if (isQuestionPage) {
                 hideAnswersInQuestionPage();
             }
