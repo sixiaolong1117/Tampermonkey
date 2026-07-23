@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         小红书综合屏蔽
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.0.2
+// @version      26.7.23
 // @description  屏蔽小红书发现页和评论区内容，支持关键词、作者、用户ID、笔记ID和视频笔记屏蔽，适配深浅色模式
 // @author       SI Xiaolong
 // @match        https://www.xiaohongshu.com/explore*
@@ -171,57 +171,68 @@
     function getCommentInfo(commentItem) {
         const userLink = commentItem.querySelector('.author a.name[href*="/user/profile/"], .avatar a[href*="/user/profile/"]');
         const authorElement = commentItem.querySelector('.author a.name');
+        const contentElement = commentItem.querySelector('.content .note-text, .content');
 
         return {
             userId: getUserIdFromLink(userLink),
-            author: authorElement ? authorElement.textContent.trim() : ''
+            author: authorElement ? authorElement.textContent.trim() : '',
+            content: contentElement ? contentElement.textContent.trim() : ''
         };
     }
 
-    function getBlockReason(noteItem) {
+    function getBlockRules() {
+        return {
+            noteIds: getBlockList(CONFIG_KEYS.NOTE_IDS),
+            userIds: getBlockList(CONFIG_KEYS.USER_IDS),
+            authors: getBlockList(CONFIG_KEYS.AUTHORS),
+            keywords: getBlockList(CONFIG_KEYS.KEYWORDS),
+            blockVideos: getValue(CONFIG_KEYS.BLOCK_VIDEOS, DEFAULTS.BLOCK_VIDEOS)
+        };
+    }
+
+    function getBlockReason(noteItem, rules) {
         const info = getNoteInfo(noteItem);
 
-        const blockedNoteIds = getBlockList(CONFIG_KEYS.NOTE_IDS);
-        if (info.noteId && blockedNoteIds.includes(info.noteId)) {
+        if (info.noteId && rules.noteIds.includes(info.noteId)) {
             return `笔记ID: ${info.noteId}`;
         }
 
-        const blockedUserIds = getBlockList(CONFIG_KEYS.USER_IDS);
-        if (info.userId && blockedUserIds.includes(info.userId)) {
+        if (info.userId && rules.userIds.includes(info.userId)) {
             return `用户ID: ${info.userId}`;
         }
 
-        const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
-        const matchedAuthor = blockedAuthors.find(author => matchText(info.author, author));
+        const matchedAuthor = rules.authors.find(author => matchText(info.author, author));
         if (matchedAuthor) {
             return `作者: ${matchedAuthor}`;
         }
 
-        const blockedKeywords = getBlockList(CONFIG_KEYS.KEYWORDS);
-        const matchedKeyword = blockedKeywords.find(keyword => matchText(info.title, keyword));
+        const matchedKeyword = rules.keywords.find(keyword => matchText(info.title, keyword));
         if (matchedKeyword) {
             return `关键词: ${matchedKeyword}`;
         }
 
-        if (getValue(CONFIG_KEYS.BLOCK_VIDEOS, DEFAULTS.BLOCK_VIDEOS) && info.isVideo) {
+        if (rules.blockVideos && info.isVideo) {
             return '视频笔记';
         }
 
         return '';
     }
 
-    function getCommentBlockReason(commentItem) {
+    function getCommentBlockReason(commentItem, rules) {
         const info = getCommentInfo(commentItem);
 
-        const blockedUserIds = getBlockList(CONFIG_KEYS.USER_IDS);
-        if (info.userId && blockedUserIds.includes(info.userId)) {
+        if (info.userId && rules.userIds.includes(info.userId)) {
             return `用户ID: ${info.userId}`;
         }
 
-        const blockedAuthors = getBlockList(CONFIG_KEYS.AUTHORS);
-        const matchedAuthor = blockedAuthors.find(author => matchText(info.author, author));
+        const matchedAuthor = rules.authors.find(author => matchText(info.author, author));
         if (matchedAuthor) {
             return `作者: ${matchedAuthor}`;
+        }
+
+        const matchedKeyword = rules.keywords.find(keyword => matchText(info.content, keyword));
+        if (matchedKeyword) {
+            return `关键词: ${matchedKeyword}`;
         }
 
         return '';
@@ -324,7 +335,7 @@
 
     function maskCommentContent(commentItem) {
         const authorElement = commentItem.querySelector('.author a.name');
-        const contentElement = commentItem.querySelector('.content .note-text');
+        const contentElement = commentItem.querySelector('.content .note-text, .content');
         const likeElement = commentItem.querySelector('.like-wrapper .count');
         const replyElement = commentItem.querySelector('.reply .count');
 
@@ -347,12 +358,13 @@
 
     function scanAndBlockNotes() {
         hideStandaloneAnnoyances();
+        const rules = getBlockRules();
 
         const noteItems = document.querySelectorAll(SELECTORS.noteItem);
         noteItems.forEach(noteItem => {
             addBlockButtons(noteItem);
 
-            const reason = getBlockReason(noteItem);
+            const reason = getBlockReason(noteItem, rules);
             if (reason) {
                 blockNote(noteItem, reason);
             } else {
@@ -364,7 +376,7 @@
         commentItems.forEach(commentItem => {
             addCommentBlockButton(commentItem);
 
-            const reason = getCommentBlockReason(commentItem);
+            const reason = getCommentBlockReason(commentItem, rules);
             if (reason) {
                 applyBlockedCommentState(commentItem, reason);
             } else {
@@ -509,7 +521,7 @@
         document.querySelector('#xhs-block-dialog-mask')?.remove();
 
         const tabs = [
-            { key: CONFIG_KEYS.KEYWORDS, name: '关键词', help: '每行一项，匹配标题。支持 /pattern/ 或 /pattern/i 正则。' },
+            { key: CONFIG_KEYS.KEYWORDS, name: '关键词', help: '每行一项，匹配笔记标题和评论正文。支持 /pattern/ 或 /pattern/i 正则。' },
             { key: CONFIG_KEYS.AUTHORS, name: '作者', help: '每行一个作者昵称，支持正则。' },
             { key: CONFIG_KEYS.USER_IDS, name: '用户ID', help: '每行一个用户ID。点击“屏蔽作者”会优先记录用户ID。' },
             { key: CONFIG_KEYS.NOTE_IDS, name: '笔记ID', help: '每行一个笔记ID。' }
@@ -660,8 +672,7 @@
             }
 
             section.note-item.xhs-blocked-hidden {
-                opacity: 0.01 !important;
-                pointer-events: none !important;
+                display: none !important;
             }
 
             section.note-item.xhs-blocked-with-placeholder .cover,
