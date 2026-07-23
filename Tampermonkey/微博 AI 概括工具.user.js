@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微博 AI 概括工具
 // @namespace    https://github.com/sixiaolong1117/Tampermonkey
-// @version      0.3
+// @version      26.7.23
 // @description  使用 LLM 对微博博文进行 AI 概括总结
 // @license      MIT
 // @icon         https://weibo.com/favicon.ico
@@ -982,7 +982,7 @@
                 userName: '._link_1b05f_126, ._name_ygi5b_120',
                 userNameAlt: '._name_1b05f_122, ._name_ygi5b_120',
                 nickContainer: '._nick_1b05f_25, ._nick_ygi5b_25',
-                suffixBox: '._suffixbox_1b05f_33',
+                suffixBox: '._suffixbox_1b05f_33, ._suffixbox_ygi5b_33',
                 iconsPlus: '._iconsPlus_1b05f_75, ._iconsPlus_ygi5b_75',
                 timeLink: 'a[class*="_time_1tpft_33"]',
             };
@@ -1013,7 +1013,11 @@
             const feedItems = container.querySelectorAll?.(S.feedBody) || [];
 
             feedItems.forEach((feedItem) => {
-                if (feedItem.querySelector('.weibo-ai-summary-btn')) return;
+                const existingButton = feedItem.querySelector('.weibo-ai-summary-btn');
+                if (existingButton) {
+                    if (existingButton.closest('.weibo-ai-button-container')) return;
+                    existingButton.remove();
+                }
 
                 // 内容区域：优先用 .wbpro-feed-content，回退到 ._wbtext_1psp9_14
                 const content = feedItem.querySelector(S.feedContent) ||
@@ -1036,54 +1040,13 @@
                 parentBox = feedItem.querySelector(`${S.nickContainer}, ${S.suffixBox}`);
                 if (parentBox) {
                     container = document.createElement('div');
-                    container.className = 'woo-box-flex woo-box-alignCenter ' + S.iconsPlus.slice(1);
+                    const isNewFeedLayout = parentBox.matches('._nick_ygi5b_25, ._suffixbox_ygi5b_33');
+                    container.className = `woo-box-flex woo-box-alignCenter ${isNewFeedLayout ? '_iconsPlus_ygi5b_75' : '_iconsPlus_1b05f_75'}`;
                     parentBox.appendChild(container);
                 }
             }
 
-            // 降级方案：在用户链接后插入
-            const fallbackInsert = () => {
-                const userLink = feedItem.querySelector(S.userLink);
-                if (!userLink) return null;
-                const btn = document.createElement('button');
-                btn.className = 'weibo-ai-summary-btn';
-                btn.textContent = 'AI 概括';
-                Object.assign(btn.style, {
-                    padding: '2px 8px',
-                    border: '1px solid #d0d0d0',
-                    borderRadius: '3px',
-                    background: 'transparent',
-                    color: '#8590a6',
-                    fontSize: '12px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s',
-                    flexShrink: '0',
-                    marginLeft: '8px',
-                    verticalAlign: 'middle'
-                });
-                btn.addEventListener('mouseenter', () => {
-                    btn.style.borderColor = '#667eea';
-                    btn.style.color = '#667eea';
-                    btn.style.background = 'rgba(102, 126, 234, 0.05)';
-                });
-                btn.addEventListener('mouseleave', () => {
-                    btn.style.borderColor = '#d0d0d0';
-                    btn.style.color = '#8590a6';
-                    btn.style.background = 'transparent';
-                });
-                btn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    e.stopImmediatePropagation();
-                    const content = feedItem.querySelector(S.feedContent) || feedItem.querySelector(S.feedText);
-                    if (content) this.summarizeContent(content, btn);
-                });
-                userLink.parentNode.insertBefore(btn, userLink.nextSibling);
-                return btn;
-            };
-
             if (!container) {
-                fallbackInsert();
                 return;
             }
 
